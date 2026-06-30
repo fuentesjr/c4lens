@@ -117,6 +117,80 @@ fn validate_json_outputs_validation_report_for_missing_model() {
     cleanup(repo);
 }
 
+#[test]
+fn validate_json_outputs_validation_report_for_unresolved_relationship() {
+    let repo = fresh_test_dir("unresolved-relationship-json");
+    write_model(
+        &repo,
+        r#"
+name: Unresolved Relationship
+actors:
+  customer:
+    name: Customer
+relationships:
+  - from: customer
+    to: missing
+    description: Uses
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(1);
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["issues"][0]["severity"], "error");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(
+        report["issues"][0]["code"],
+        "semantic.unresolved_relationship_target"
+    );
+
+    cleanup(repo);
+}
+
+#[test]
+fn validate_json_outputs_validation_report_for_unresolved_relationship_source() {
+    let repo = fresh_test_dir("unresolved-relationship-source-json");
+    write_model(
+        &repo,
+        r#"
+name: Unresolved Relationship Source
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: missing
+    to: banking
+    description: Uses
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(1);
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["issues"][0]["severity"], "error");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(
+        report["issues"][0]["code"],
+        "semantic.unresolved_relationship_source"
+    );
+
+    cleanup(repo);
+}
+
 fn write_model(repo: &PathBuf, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");

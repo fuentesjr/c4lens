@@ -5,8 +5,8 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Model, RepoHandle,
-    SourceKind, ValidationReport,
+    BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Model, Relationship,
+    RepoHandle, SourceKind, ValidationReport,
 };
 
 pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel, CommandError> {
@@ -58,6 +58,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
 
     let relationships = model.relationships.clone();
     let elements_by_slug = flatten_elements(&model);
+    validate_relationships(&relationships, &elements_by_slug)?;
     let source_sha = stable_source_sha(&contents);
 
     Ok(EffectiveModel {
@@ -170,6 +171,37 @@ fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
     }
 
     output
+}
+
+fn validate_relationships(
+    relationships: &[Relationship],
+    elements_by_slug: &BTreeMap<String, ElementNode>,
+) -> Result<(), CommandError> {
+    for (index, relationship) in relationships.iter().enumerate() {
+        if !elements_by_slug.contains_key(&relationship.from) {
+            return Err(CommandError::with_details(
+                "semantic.unresolved_relationship_source",
+                "Relationship source does not resolve to an element.",
+                serde_json::json!({
+                    "path": format!("/relationships/{index}/from"),
+                    "slug": relationship.from,
+                }),
+            ));
+        }
+
+        if !elements_by_slug.contains_key(&relationship.to) {
+            return Err(CommandError::with_details(
+                "semantic.unresolved_relationship_target",
+                "Relationship target does not resolve to an element.",
+                serde_json::json!({
+                    "path": format!("/relationships/{index}/to"),
+                    "slug": relationship.to,
+                }),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn base_with_slug(base: &BaseElement, slug: &str) -> BaseElement {
@@ -1025,6 +1057,62 @@ actors:
         let error = load_effective_model_from_repo(repo).expect_err("duplicate key should fail");
 
         assert_eq!(error.code, "parse.duplicate_key");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_with_missing_source_slug() {
+        let root = fresh_test_dir("missing-relationship-source");
+        write_model(
+            &root,
+            r#"
+name: Missing Source
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: missing
+    to: banking
+    description: Uses
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("missing source should fail");
+
+        assert_eq!(error.code, "semantic.unresolved_relationship_source");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_with_missing_target_slug() {
+        let root = fresh_test_dir("missing-relationship-target");
+        write_model(
+            &root,
+            r#"
+name: Missing Target
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: missing
+    description: Uses
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("missing target should fail");
+
+        assert_eq!(error.code, "semantic.unresolved_relationship_target");
 
         cleanup(root);
     }

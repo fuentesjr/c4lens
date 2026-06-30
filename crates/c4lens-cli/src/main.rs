@@ -78,7 +78,7 @@ fn run_validate(repo: Option<PathBuf>, json: bool) -> i32 {
                         "ok": false,
                         "issues": [{
                             "severity": "error",
-                            "stage": if error.code == "path.invalid" { "semantic" } else { "parse" },
+                            "stage": validation_stage_for_error(&error.code),
                             "code": error.code,
                             "message": error.message,
                             "details": error.details,
@@ -106,6 +106,16 @@ fn run_validate(repo: Option<PathBuf>, json: bool) -> i32 {
     }
 
     0
+}
+
+fn validation_stage_for_error(code: &str) -> &'static str {
+    if code.starts_with("semantic.") || code == "path.invalid" {
+        "semantic"
+    } else if code.starts_with("schema.") {
+        "schema"
+    } else {
+        "parse"
+    }
 }
 
 fn run_scan(repo: Option<PathBuf>, force: bool, json: bool) -> i32 {
