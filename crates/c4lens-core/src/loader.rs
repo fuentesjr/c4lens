@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::{
     BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Model, Relationship,
-    RepoHandle, SourceKind, ValidationReport,
+    RepoHandle, SourceKind, ValidationIssue, ValidationReport, ValidationSeverity, ValidationStage,
 };
 
 pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel, CommandError> {
@@ -59,6 +59,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     let relationships = model.relationships.clone();
     let elements_by_slug = flatten_elements(&model);
     validate_relationships(&relationships, &elements_by_slug)?;
+    let issues = validate_code_paths(&repo_root, &elements_by_slug)?;
     let source_sha = stable_source_sha(&contents);
 
     Ok(EffectiveModel {
@@ -72,7 +73,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
         validation: ValidationReport {
             ok: true,
             source_sha: Some(source_sha),
-            issues: Vec::new(),
+            issues,
         },
     })
 }
@@ -202,6 +203,166 @@ fn validate_relationships(
     }
 
     Ok(())
+}
+
+fn validate_code_paths(
+    repo_root: &Path,
+    elements_by_slug: &BTreeMap<String, ElementNode>,
+) -> Result<Vec<ValidationIssue>, CommandError> {
+    let mut issues = Vec::new();
+
+    for element in elements_by_slug.values() {
+        let Some(code_path) = element.base.code.as_deref() else {
+            continue;
+        };
+        if let Some(issue) =
+            validate_model_code_path(repo_root, element, code_path, &element_code_path(element))?
+        {
+            issues.push(issue);
+        }
+    }
+
+    Ok(issues)
+}
+
+fn validate_model_code_path(
+    repo_root: &Path,
+    element: &ElementNode,
+    code_path: &str,
+    model_path: &str,
+) -> Result<Option<ValidationIssue>, CommandError> {
+    let relative_path = normalized_relative_code_path(code_path).map_err(|code| {
+        CommandError::with_details(
+            code,
+            "Model code path uses unsupported syntax.",
+            serde_json::json!({
+                "path": model_path,
+                "slug": element.base.slug,
+                "code": code_path,
+            }),
+        )
+    })?;
+
+    let resolved_path = repo_root.join(&relative_path);
+    let Some(existing_path) = deepest_existing_path(&resolved_path) else {
+        return Err(CommandError::with_details(
+            "semantic.code_path_outside_repo",
+            "Model code path escapes the selected repository.",
+            serde_json::json!({
+                "path": model_path,
+                "slug": element.base.slug,
+                "code": code_path,
+            }),
+        ));
+    };
+    let canonical_existing_path = existing_path.canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "semantic.code_path_outside_repo",
+            "Model code path could not be resolved inside the selected repository.",
+            serde_json::json!({
+                "path": model_path,
+                "slug": element.base.slug,
+                "code": code_path,
+                "error": error.to_string(),
+            }),
+        )
+    })?;
+
+    if !canonical_existing_path.starts_with(repo_root) {
+        return Err(CommandError::with_details(
+            "semantic.code_path_outside_repo",
+            "Model code path resolves outside the selected repository.",
+            serde_json::json!({
+                "path": model_path,
+                "slug": element.base.slug,
+                "code": code_path,
+            }),
+        ));
+    }
+
+    if path_exists_without_following_final_symlink(&resolved_path) {
+        return Ok(None);
+    }
+
+    Ok(Some(ValidationIssue {
+        severity: ValidationSeverity::Warning,
+        stage: ValidationStage::Semantic,
+        code: "semantic.code_path_missing".to_string(),
+        message: "Model code path does not exist inside the selected repository.".to_string(),
+        path: Some(model_path.to_string()),
+        line: None,
+        column: None,
+    }))
+}
+
+fn normalized_relative_code_path(code_path: &str) -> Result<PathBuf, &'static str> {
+    if code_path.is_empty()
+        || code_path.starts_with('/')
+        || code_path.contains('\\')
+        || code_path.contains('\0')
+        || code_path.contains("://")
+        || looks_like_windows_drive_path(code_path)
+    {
+        return Err("semantic.code_path_invalid");
+    }
+
+    let mut normalized = PathBuf::new();
+    for segment in code_path.split('/') {
+        if segment.is_empty() {
+            return Err("semantic.code_path_invalid");
+        }
+        match segment {
+            "." => {}
+            ".." => {
+                if !normalized.pop() {
+                    return Err("semantic.code_path_outside_repo");
+                }
+            }
+            _ => normalized.push(segment),
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn looks_like_windows_drive_path(code_path: &str) -> bool {
+    let mut chars = code_path.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
+        && matches!(chars.next(), Some(':'))
+}
+
+fn deepest_existing_path(path: &Path) -> Option<&Path> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if path_exists_without_following_final_symlink(candidate) {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+
+    None
+}
+
+fn path_exists_without_following_final_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn element_code_path(element: &ElementNode) -> String {
+    match element.element_type {
+        ElementType::Actor => format!("/actors/{}/code", element.base.slug),
+        ElementType::System => format!("/systems/{}/code", element.base.slug),
+        ElementType::Container => format!(
+            "/systems/{}/containers/{}/code",
+            element.system_slug.as_deref().unwrap_or("<unknown>"),
+            element.base.slug
+        ),
+        ElementType::Component => format!(
+            "/systems/{}/containers/{}/components/{}/code",
+            element.system_slug.as_deref().unwrap_or("<unknown>"),
+            element.container_slug.as_deref().unwrap_or("<unknown>"),
+            element.base.slug
+        ),
+    }
 }
 
 fn base_with_slug(base: &BaseElement, slug: &str) -> BaseElement {
@@ -2329,6 +2490,157 @@ relationships:
         let error = load_effective_model_from_repo(repo).expect_err("missing target should fail");
 
         assert_eq!(error.code, "semantic.unresolved_relationship_target");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_invalid_code_path_syntax_as_semantic_error() {
+        let root = fresh_test_dir("invalid-code-path");
+        write_model(
+            &root,
+            r#"
+name: Invalid Code Path
+systems:
+  banking:
+    name: Banking
+    code: src\banking
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("invalid code should fail");
+
+        assert_eq!(error.code, "semantic.code_path_invalid");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_escaping_code_path_as_semantic_error() {
+        let root = fresh_test_dir("escaping-code-path");
+        write_model(
+            &root,
+            r#"
+name: Escaping Code Path
+systems:
+  banking:
+    name: Banking
+    code: ../outside
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("escaping code should fail");
+
+        assert_eq!(error.code, "semantic.code_path_outside_repo");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn records_missing_code_path_as_semantic_warning() {
+        let root = fresh_test_dir("missing-code-path");
+        write_model(
+            &root,
+            r#"
+name: Missing Code Path
+systems:
+  banking:
+    name: Banking
+    code: src/banking
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("missing code is warning");
+
+        assert!(effective.validation.ok);
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "semantic.code_path_missing"
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn accepts_existing_code_path_without_warning() {
+        let root = fresh_test_dir("existing-code-path");
+        fs::create_dir_all(root.join("src/banking")).expect("create code dir");
+        write_model(
+            &root,
+            r#"
+name: Existing Code Path
+systems:
+  banking:
+    name: Banking
+    code: src/banking
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("existing code should load");
+
+        assert!(effective.validation.ok);
+        assert!(effective.validation.issues.is_empty());
+
+        cleanup(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_code_path_symlink_that_resolves_outside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let root = fresh_test_dir("escaping-code-symlink");
+        let outside = fresh_test_dir("outside-code");
+        fs::create_dir(root.join("src")).expect("create src dir");
+        symlink(&outside, root.join("src/outside")).expect("create code symlink");
+        write_model(
+            &root,
+            r#"
+name: Escaping Code Symlink
+systems:
+  banking:
+    name: Banking
+    code: src/outside
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("escaping symlink should fail");
+
+        assert_eq!(error.code, "semantic.code_path_outside_repo");
+
+        cleanup(root);
+        cleanup(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_broken_code_path_symlink_that_points_outside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let root = fresh_test_dir("broken-escaping-code-symlink");
+        fs::create_dir(root.join("src")).expect("create src dir");
+        symlink("../../outside/missing", root.join("src/broken")).expect("create broken symlink");
+        write_model(
+            &root,
+            r#"
+name: Broken Escaping Code Symlink
+systems:
+  banking:
+    name: Banking
+    code: src/broken
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("broken symlink should fail");
+
+        assert_eq!(error.code, "semantic.code_path_outside_repo");
 
         cleanup(root);
     }

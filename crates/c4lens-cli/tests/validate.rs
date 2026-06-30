@@ -257,6 +257,37 @@ relationships:
     cleanup(repo);
 }
 
+#[test]
+fn validate_json_outputs_warning_for_missing_code_path() {
+    let repo = fresh_test_dir("missing-code-path-json");
+    write_model(
+        &repo,
+        r#"
+name: Missing Code Path
+systems:
+  banking:
+    name: Banking
+    code: src/banking
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["issues"][0]["severity"], "warning");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(report["issues"][0]["code"], "semantic.code_path_missing");
+
+    cleanup(repo);
+}
+
 fn write_model(repo: &PathBuf, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");
