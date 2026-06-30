@@ -327,6 +327,51 @@ systems:
     cleanup(repo);
 }
 
+#[test]
+fn validate_json_outputs_warning_for_duplicate_relationship() {
+    let repo = fresh_test_dir("duplicate-relationship-json");
+    write_model(
+        &repo,
+        r#"
+name: Duplicate Relationship
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+  - from: customer
+    to: banking
+    description: Uses
+    status: live
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["issues"][0]["severity"], "warning");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(
+        report["issues"][0]["code"],
+        "semantic.duplicate_relationship"
+    );
+    assert_eq!(report["issues"][0]["path"], "/relationships/1");
+
+    cleanup(repo);
+}
+
 fn write_model(repo: &PathBuf, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");

@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Model, Relationship,
-    RepoHandle, SourceKind, ValidationIssue, ValidationReport, ValidationSeverity, ValidationStage,
+    BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Lifecycle, Model,
+    Relationship, RepoHandle, SourceKind, ValidationIssue, ValidationReport, ValidationSeverity,
+    ValidationStage,
 };
 
 pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel, CommandError> {
@@ -56,10 +57,15 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     })?;
     normalize_model(&mut model, false);
 
-    let relationships = model.relationships.clone();
+    let (indexed_relationships, mut issues) = deduplicate_relationships(&model.relationships);
+    let relationships = indexed_relationships
+        .iter()
+        .map(|indexed| indexed.relationship.clone())
+        .collect::<Vec<_>>();
+    model.relationships = relationships.clone();
     let elements_by_slug = flatten_elements(&model)?;
-    validate_relationships(&relationships, &elements_by_slug)?;
-    let issues = validate_code_paths(&repo_root, &elements_by_slug)?;
+    validate_relationships(&indexed_relationships, &elements_by_slug)?;
+    issues.extend(validate_code_paths(&repo_root, &elements_by_slug)?);
     let source_sha = stable_source_sha(&contents);
 
     Ok(EffectiveModel {
@@ -213,11 +219,21 @@ fn insert_flattened_element(
     Ok(())
 }
 
+struct IndexedRelationship {
+    authored_index: usize,
+    relationship: Relationship,
+}
+
+type RelationshipIdentity = (String, String, String, String, &'static str);
+
 fn validate_relationships(
-    relationships: &[Relationship],
+    relationships: &[IndexedRelationship],
     elements_by_slug: &BTreeMap<String, ElementNode>,
 ) -> Result<(), CommandError> {
-    for (index, relationship) in relationships.iter().enumerate() {
+    for indexed in relationships {
+        let index = indexed.authored_index;
+        let relationship = &indexed.relationship;
+
         if !elements_by_slug.contains_key(&relationship.from) {
             return Err(CommandError::with_details(
                 "semantic.unresolved_relationship_source",
@@ -242,6 +258,57 @@ fn validate_relationships(
     }
 
     Ok(())
+}
+
+fn deduplicate_relationships(
+    relationships: &[Relationship],
+) -> (Vec<IndexedRelationship>, Vec<ValidationIssue>) {
+    let mut unique_relationships = Vec::with_capacity(relationships.len());
+    let mut seen_by_identity = BTreeMap::new();
+    let mut issues = Vec::new();
+
+    for (index, relationship) in relationships.iter().enumerate() {
+        let identity = relationship_identity(relationship);
+        if let Some(first_index) = seen_by_identity.get(&identity) {
+            issues.push(ValidationIssue {
+                severity: ValidationSeverity::Warning,
+                stage: ValidationStage::Semantic,
+                code: "semantic.duplicate_relationship".to_string(),
+                message: format!(
+                    "Relationship duplicates /relationships/{first_index} and was ignored."
+                ),
+                path: Some(format!("/relationships/{index}")),
+                line: None,
+                column: None,
+            });
+        } else {
+            seen_by_identity.insert(identity, index);
+            unique_relationships.push(IndexedRelationship {
+                authored_index: index,
+                relationship: relationship.clone(),
+            });
+        }
+    }
+
+    (unique_relationships, issues)
+}
+
+fn relationship_identity(relationship: &Relationship) -> RelationshipIdentity {
+    (
+        relationship.from.clone(),
+        relationship.to.clone(),
+        relationship.description.clone(),
+        relationship.tech.clone().unwrap_or_default(),
+        lifecycle_identity(&relationship.status),
+    )
+}
+
+fn lifecycle_identity(status: &Lifecycle) -> &'static str {
+    match status {
+        Lifecycle::Live => "live",
+        Lifecycle::Planned => "planned",
+        Lifecycle::Deprecated => "deprecated",
+    }
 }
 
 fn validate_code_paths(
@@ -2529,6 +2596,123 @@ relationships:
         let error = load_effective_model_from_repo(repo).expect_err("missing target should fail");
 
         assert_eq!(error.code, "semantic.unresolved_relationship_target");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn warns_and_deduplicates_duplicate_relationship_identity() {
+        let root = fresh_test_dir("duplicate-relationship-identity");
+        write_model(
+            &root,
+            r#"
+name: Duplicate Relationship Identity
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    tech: HTTPS
+  - from: customer
+    to: banking
+    description: Uses
+    tech: HTTPS
+    status: live
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("duplicate should warn");
+
+        assert!(effective.validation.ok);
+        assert_eq!(effective.relationships.len(), 1);
+        assert_eq!(effective.model.relationships.len(), 1);
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "semantic.duplicate_relationship"
+        );
+        assert_eq!(
+            effective.validation.issues[0].path.as_deref(),
+            Some("/relationships/1")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn keeps_distinct_relationships_with_different_statuses() {
+        let root = fresh_test_dir("distinct-relationship-status");
+        write_model(
+            &root,
+            r#"
+name: Distinct Relationship Status
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    status: live
+  - from: customer
+    to: banking
+    description: Uses
+    status: planned
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("distinct should load");
+
+        assert!(effective.validation.ok);
+        assert_eq!(effective.relationships.len(), 2);
+        assert!(effective.validation.issues.is_empty());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn reports_authored_index_after_duplicate_relationship_is_removed() {
+        let root = fresh_test_dir("duplicate-before-unresolved-relationship");
+        write_model(
+            &root,
+            r#"
+name: Duplicate Before Unresolved Relationship
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+  - from: customer
+    to: banking
+    description: Uses
+    status: live
+  - from: customer
+    to: missing
+    description: Uses missing
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("missing target should fail");
+        let details = error.details.expect("error details");
+
+        assert_eq!(error.code, "semantic.unresolved_relationship_target");
+        assert_eq!(details["path"], "/relationships/2/to");
 
         cleanup(root);
     }
