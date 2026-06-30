@@ -217,7 +217,7 @@ fn stable_source_sha(contents: &str) -> String {
 fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, CommandError> {
     reject_anchor_and_alias_tokens(contents)?;
 
-    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(contents).map_err(|error| {
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(contents).map_err(|error| {
         let message = error.to_string();
         if message.contains("duplicate entry") {
             return CommandError::with_details(
@@ -235,7 +235,54 @@ fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, Comman
     })?;
     reject_merge_keys(&value)?;
     validate_top_level_model_schema(&value)?;
+    normalize_technology_aliases(&mut value, "")?;
     Ok(value)
+}
+
+fn normalize_technology_aliases(
+    value: &mut serde_yaml_ng::Value,
+    path: &str,
+) -> Result<(), CommandError> {
+    match value {
+        serde_yaml_ng::Value::Mapping(mapping) => {
+            let technology = mapping.get("technology").cloned();
+            if let Some(technology) = technology {
+                if let Some(tech) = mapping.get("tech") {
+                    if tech != &technology {
+                        return Err(CommandError::with_details(
+                            "semantic.conflicting_technology_alias",
+                            "`tech` and `technology` must not disagree.",
+                            serde_json::json!({ "path": path }),
+                        ));
+                    }
+                }
+
+                mapping.shift_remove("technology");
+                if !mapping.contains_key("tech") {
+                    mapping.insert(serde_yaml_ng::Value::String("tech".to_string()), technology);
+                }
+            }
+
+            for (key, value) in mapping.iter_mut() {
+                let key = yaml_string_value(key).unwrap_or("<non-string>");
+                normalize_technology_aliases(value, &format!("{path}/{key}"))?;
+            }
+        }
+        serde_yaml_ng::Value::Sequence(items) => {
+            for (index, item) in items.iter_mut().enumerate() {
+                normalize_technology_aliases(item, &format!("{path}/{index}"))?;
+            }
+        }
+        serde_yaml_ng::Value::Tagged(tagged) => {
+            normalize_technology_aliases(&mut tagged.value, path)?;
+        }
+        serde_yaml_ng::Value::Null
+        | serde_yaml_ng::Value::Bool(_)
+        | serde_yaml_ng::Value::Number(_)
+        | serde_yaml_ng::Value::String(_) => {}
+    }
+
+    Ok(())
 }
 
 fn validate_top_level_model_schema(value: &serde_yaml_ng::Value) -> Result<(), CommandError> {
@@ -299,7 +346,168 @@ fn validate_top_level_model_schema(value: &serde_yaml_ng::Value) -> Result<(), C
         ));
     }
 
+    if let Some(actors) = mapping_value(mapping, "actors") {
+        validate_actor_map(actors, "/actors")?;
+    }
+    if let Some(systems) = mapping_value(mapping, "systems") {
+        validate_system_map(systems, "/systems")?;
+    }
+
     Ok(())
+}
+
+fn validate_actor_map(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = expect_mapping(value, path, "Actors must be an object.")?;
+    for (slug, actor) in mapping {
+        let slug = validate_slug_key(slug, path)?;
+        validate_base_element(actor, &format!("{path}/{slug}"), &[])?;
+    }
+
+    Ok(())
+}
+
+fn validate_system_map(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = expect_mapping(value, path, "Systems must be an object.")?;
+    for (slug, system) in mapping {
+        let slug = validate_slug_key(slug, path)?;
+        validate_system(system, &format!("{path}/{slug}"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_container_map(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = expect_mapping(value, path, "Containers must be an object.")?;
+    for (slug, container) in mapping {
+        let slug = validate_slug_key(slug, path)?;
+        validate_container(container, &format!("{path}/{slug}"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_component_map(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = expect_mapping(value, path, "Components must be an object.")?;
+    for (slug, component) in mapping {
+        let slug = validate_slug_key(slug, path)?;
+        validate_base_element(component, &format!("{path}/{slug}"), &[])?;
+    }
+
+    Ok(())
+}
+
+fn validate_system(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = validate_base_element(value, path, &["external", "containers"])?;
+    for (key, value) in mapping {
+        let key = yaml_string_value(key).expect("base element validator checked keys");
+        match key {
+            "external" => validate_bool(
+                value,
+                &format!("{path}/external"),
+                "System external flag must be a boolean.",
+            )?,
+            "containers" => validate_container_map(value, &format!("{path}/containers"))?,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_container(value: &serde_yaml_ng::Value, path: &str) -> Result<(), CommandError> {
+    let mapping = validate_base_element(value, path, &["kind", "components"])?;
+    for (key, value) in mapping {
+        let key = yaml_string_value(key).expect("base element validator checked keys");
+        match key {
+            "kind" => validate_enum(
+                value,
+                &format!("{path}/kind"),
+                "Container kind is unsupported.",
+                &["service", "app", "store", "queue", "worker", "job"],
+            )?,
+            "components" => validate_component_map(value, &format!("{path}/components"))?,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_base_element<'a>(
+    value: &'a serde_yaml_ng::Value,
+    path: &str,
+    allowed_extra_keys: &[&str],
+) -> Result<&'a serde_yaml_ng::Mapping, CommandError> {
+    let mapping = expect_mapping(value, path, "Element must be an object.")?;
+    let mut has_name = false;
+
+    for (key, value) in mapping {
+        let Some(key) = yaml_string_value(key) else {
+            return Err(schema_error(
+                "schema.invalid_type",
+                "Element property names must be strings.",
+                path,
+                serde_json::json!({ "expected": "string" }),
+            ));
+        };
+
+        match key {
+            "name" => {
+                has_name = true;
+                validate_required_string(
+                    value,
+                    &format!("{path}/name"),
+                    "Element name is required.",
+                )?;
+            }
+            "description" => validate_string(
+                value,
+                &format!("{path}/description"),
+                "Element description must be a string.",
+            )?,
+            "tech" | "technology" => validate_string(
+                value,
+                &format!("{path}/{key}"),
+                "Element technology must be a string.",
+            )?,
+            "status" => validate_enum(
+                value,
+                &format!("{path}/status"),
+                "Element status is unsupported.",
+                &["live", "planned", "deprecated"],
+            )?,
+            "code" => validate_required_string(
+                value,
+                &format!("{path}/code"),
+                "Element code path must be a non-empty string.",
+            )?,
+            "generated" => validate_bool(
+                value,
+                &format!("{path}/generated"),
+                "Element generated flag must be a boolean.",
+            )?,
+            allowed if allowed_extra_keys.contains(&allowed) => {}
+            other => {
+                return Err(schema_error(
+                    "schema.additional_property",
+                    "Element contains an unsupported property.",
+                    format!("{path}/{other}"),
+                    serde_json::json!({ "property": other }),
+                ));
+            }
+        }
+    }
+
+    if !has_name {
+        return Err(schema_error(
+            "schema.required",
+            "Element name is required.",
+            format!("{path}/name"),
+            serde_json::json!({ "required": "name" }),
+        ));
+    }
+
+    Ok(mapping)
 }
 
 fn validate_string(
@@ -394,6 +602,92 @@ fn validate_sequence(
         path,
         serde_json::json!({ "expected": "array" }),
     ))
+}
+
+fn validate_enum(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+    allowed: &[&str],
+) -> Result<(), CommandError> {
+    let Some(value) = yaml_string_value(value) else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            message,
+            path,
+            serde_json::json!({ "expected": "string" }),
+        ));
+    };
+
+    if allowed.contains(&value) {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.pattern",
+        message,
+        path,
+        serde_json::json!({ "allowed": allowed }),
+    ))
+}
+
+fn expect_mapping<'a>(
+    value: &'a serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<&'a serde_yaml_ng::Mapping, CommandError> {
+    let serde_yaml_ng::Value::Mapping(mapping) = value else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            message,
+            path,
+            serde_json::json!({ "expected": "object" }),
+        ));
+    };
+
+    Ok(mapping)
+}
+
+fn mapping_value<'a>(
+    mapping: &'a serde_yaml_ng::Mapping,
+    key: &str,
+) -> Option<&'a serde_yaml_ng::Value> {
+    mapping.iter().find_map(|(mapping_key, value)| {
+        (yaml_string_value(mapping_key) == Some(key)).then_some(value)
+    })
+}
+
+fn validate_slug_key<'a>(
+    key: &'a serde_yaml_ng::Value,
+    path: &str,
+) -> Result<&'a str, CommandError> {
+    let Some(slug) = yaml_string_value(key) else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            "Slug keys must be strings.",
+            path,
+            serde_json::json!({ "expected": "string" }),
+        ));
+    };
+
+    if is_valid_slug(slug) {
+        return Ok(slug);
+    }
+
+    Err(schema_error(
+        "schema.pattern",
+        "Slug does not match the required pattern.",
+        format!("{path}/{slug}"),
+        serde_json::json!({ "pattern": "^[a-z][a-z0-9_]*$" }),
+    ))
+}
+
+fn is_valid_slug(slug: &str) -> bool {
+    let mut chars = slug.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
+        && chars.all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
 }
 
 fn yaml_string_value(value: &serde_yaml_ng::Value) -> Option<&str> {
@@ -1334,6 +1628,143 @@ unexpected: true
         let error = load_effective_model_from_repo(repo).expect_err("actors should fail");
 
         assert_eq!(error.code, "schema.invalid_type");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_invalid_actor_slug_as_schema_pattern_error() {
+        let root = fresh_test_dir("schema-invalid-actor-slug");
+        write_model(
+            &root,
+            r#"
+name: Invalid Actor Slug
+actors:
+  Customer:
+    name: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("actor slug should fail");
+
+        assert_eq!(error.code, "schema.pattern");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_actor_missing_required_name_as_schema_error() {
+        let root = fresh_test_dir("schema-actor-missing-name");
+        write_model(
+            &root,
+            r#"
+name: Actor Missing Name
+actors:
+  customer:
+    description: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("actor name should fail");
+
+        assert_eq!(error.code, "schema.required");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_actor_additional_property_as_schema_error() {
+        let root = fresh_test_dir("schema-actor-additional-property");
+        write_model(
+            &root,
+            r#"
+name: Actor Additional Property
+actors:
+  customer:
+    name: Customer
+    external: false
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("actor extra key should fail");
+
+        assert_eq!(error.code, "schema.additional_property");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_invalid_container_kind_as_schema_error() {
+        let root = fresh_test_dir("schema-invalid-container-kind");
+        write_model(
+            &root,
+            r#"
+name: Invalid Container Kind
+systems:
+  banking:
+    name: Banking
+    containers:
+      web:
+        name: Web
+        kind: spaceship
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("container kind should fail");
+
+        assert_eq!(error.code, "schema.pattern");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn normalizes_element_technology_alias_to_tech() {
+        let root = fresh_test_dir("schema-technology-alias");
+        write_model(
+            &root,
+            r#"
+name: Technology Alias
+systems:
+  banking:
+    name: Banking
+    technology: Rust
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("technology alias should load");
+
+        assert_eq!(
+            effective.model.systems["banking"].base.tech.as_deref(),
+            Some("Rust")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_conflicting_technology_aliases() {
+        let root = fresh_test_dir("schema-conflicting-technology-alias");
+        write_model(
+            &root,
+            r#"
+name: Technology Alias Conflict
+systems:
+  banking:
+    name: Banking
+    tech: Rust
+    technology: Go
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("conflict should fail");
+
+        assert_eq!(error.code, "semantic.conflicting_technology_alias");
 
         cleanup(root);
     }
