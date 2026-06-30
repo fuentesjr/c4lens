@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "workspaces": [
+    "app"
+  ],
+  "scripts": {
+    "dev": "npm --workspace app run dev",
+    "build": "npm --workspace app run build",
+    "check": "npm --workspace app run check",
+    "test": "npm --workspace app run test",
+    "preview": "npm --workspace app run preview",
+    "tauri": "npm --workspace app run tauri",
+    "tauri:dev": "npm --workspace app run tauri:dev",
+    "tauri:build": "npm --workspace app run tauri:build"
+  }
+}

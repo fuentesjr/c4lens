@@ -38,6 +38,12 @@ The target operating system for MVP is macOS only. Produce universal arm64 +
 x86_64 bundles. Windows/Linux remain architectural constraints but are not
 release blockers for MVP.
 
+Current scaffold note: the initial Phase 0 implementation wires the Tauri
+shell, folder-open flow, hard-coded sample model, renderer view derivation, ELK
+layout, and xyflow canvas. The broader command surface, validation pipeline,
+watcher, SQLite index, scanner, generator, and generation review workflow remain
+Phase 1-2 contracts until their sections are implemented.
+
 ### 1.2 Non-Goals
 
 - No drag-to-draw or drag-to-edit diagram canvas.
@@ -1994,7 +2000,7 @@ The app must not:
 SQLite is owned by Rust core only. Do not use `tauri-plugin-sql` for renderer
 SQL access.
 
-## 20. Module Layout
+## 20. Target Module Layout
 
 Recommended workspace:
 
@@ -2038,6 +2044,11 @@ Ownership:
 - `c4lens-tauri` depends on `c4lens-core` and exposes commands/events.
 - Renderer TypeScript owns `ViewDeriver`; Rust does not implement view
   derivation in MVP.
+
+The Phase 0 scaffold may keep modules flat while responsibilities are still
+small. Extract to the target subdirectories as validation, overlay, scan,
+index, generation, watch, export, navigator, detail panel, generation review,
+search, and export behavior are added.
 
 ## 21. Packaging
 

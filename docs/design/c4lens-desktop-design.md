@@ -265,6 +265,18 @@ Every dependency earns its place.
 | Tests | Minitest | **`cargo test` (core) + Vitest (renderer)** | Per-layer testing. |
 | Auth | None on localhost | **None (local single-user)** | Nothing to authenticate. |
 
+**Deferred renderer dependency — Effect.** `effect` / Effect-TS was reviewed
+as a possible TypeScript runtime for typed async workflows, cancellation,
+retries, service composition, and richer client-side error modeling. It is not
+part of Phases 0-1 because the app's reliability-critical work is intentionally
+in Rust: filesystem safety, parsing, validation, scanning, indexing,
+generation, watching, writer locks, and CLI behavior. The renderer should stay
+plain React/TypeScript while it mainly owns view derivation, ELK layout,
+xyflow interaction, and thin Tauri command calls. Reconsider Effect in Phase 2
+only if the generation review UI grows enough client-side orchestration
+complexity — progress streams, cancellation, retries, concurrent command state,
+or a real renderer service layer — to justify adopting a second runtime model.
+
 ---
 
 ## 9. Workflows

@@ -1,3 +1,7 @@
 .handoffs/
 .misc/
 tmp/
+devops/
+node_modules/
+app/dist/
+target/

@@ -1,0 +1,51 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "c4lens",
+  "version": "0.1.0",
+  "identifier": "com.fuentesjr.c4lens",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../../app/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "c4lens",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": ["'self'", "ipc:"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "asset:", "data:"],
+        "font-src": ["'self'", "data:"],
+        "connect-src": ["'self'", "ipc:"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "frame-ancestors": ["'none'"]
+      },
+      "devCsp": {
+        "default-src": ["'self'", "ipc:", "http://127.0.0.1:5173"],
+        "script-src": ["'self'", "'unsafe-inline'", "http://127.0.0.1:5173"],
+        "style-src": ["'self'", "'unsafe-inline'", "http://127.0.0.1:5173"],
+        "img-src": ["'self'", "asset:", "data:", "http://127.0.0.1:5173"],
+        "font-src": ["'self'", "data:", "http://127.0.0.1:5173"],
+        "connect-src": ["'self'", "ipc:", "http://127.0.0.1:5173", "ws://127.0.0.1:5173"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "frame-ancestors": ["'none'"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}

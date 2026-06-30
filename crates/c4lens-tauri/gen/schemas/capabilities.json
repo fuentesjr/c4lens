@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default permissions for the c4lens desktop shell.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}
