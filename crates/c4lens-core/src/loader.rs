@@ -234,9 +234,137 @@ fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, Comman
         )
     })?;
     reject_merge_keys(&value)?;
+    normalize_relationship_shorthand(&mut value)?;
     validate_top_level_model_schema(&value)?;
     normalize_technology_aliases(&mut value, "")?;
     Ok(value)
+}
+
+fn normalize_relationship_shorthand(value: &mut serde_yaml_ng::Value) -> Result<(), CommandError> {
+    let serde_yaml_ng::Value::Mapping(mapping) = value else {
+        return Ok(());
+    };
+    let Some(serde_yaml_ng::Value::Sequence(relationships)) = mapping.get_mut("relationships")
+    else {
+        return Ok(());
+    };
+
+    for (index, relationship) in relationships.iter_mut().enumerate() {
+        let path = format!("/relationships/{index}");
+        if let Some(normalized) = relationship_shorthand_to_mapping(relationship, &path)? {
+            *relationship = normalized;
+        }
+    }
+
+    Ok(())
+}
+
+fn relationship_shorthand_to_mapping(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+) -> Result<Option<serde_yaml_ng::Value>, CommandError> {
+    match value {
+        serde_yaml_ng::Value::String(shorthand) => {
+            parse_relationship_shorthand_string(shorthand, path).map(Some)
+        }
+        serde_yaml_ng::Value::Mapping(mapping) if mapping.len() == 1 => {
+            let Some((key, description)) = mapping.iter().next() else {
+                return Ok(None);
+            };
+            let Some(key) = yaml_string_value(key) else {
+                return Ok(None);
+            };
+            if !key.contains("->") {
+                return Ok(None);
+            }
+            let Some(description) = yaml_string_value(description) else {
+                return Err(schema_error(
+                    "schema.invalid_type",
+                    "Relationship shorthand description must be a string.",
+                    path,
+                    serde_json::json!({ "expected": "string" }),
+                ));
+            };
+
+            relationship_mapping_from_parts(key, description, path).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn parse_relationship_shorthand_string(
+    shorthand: &str,
+    path: &str,
+) -> Result<serde_yaml_ng::Value, CommandError> {
+    let Some((identity, description)) = shorthand.split_once(':') else {
+        return Err(schema_error(
+            "schema.pattern",
+            "Relationship shorthand must use `from -> to: description`.",
+            path,
+            serde_json::json!({ "pattern": "from -> to: description" }),
+        ));
+    };
+
+    relationship_mapping_from_parts(identity, description, path)
+}
+
+fn relationship_mapping_from_parts(
+    identity: &str,
+    description: &str,
+    path: &str,
+) -> Result<serde_yaml_ng::Value, CommandError> {
+    let Some((from, to)) = identity.split_once("->") else {
+        return Err(schema_error(
+            "schema.pattern",
+            "Relationship shorthand must use `from -> to`.",
+            path,
+            serde_json::json!({ "pattern": "from -> to" }),
+        ));
+    };
+    let from = from.trim();
+    let to = to.trim();
+    let description = description.trim();
+
+    if !is_valid_slug(from) || !is_valid_slug(to) {
+        return Err(schema_error(
+            "schema.pattern",
+            "Relationship shorthand endpoints must be valid slugs.",
+            path,
+            serde_json::json!({ "pattern": "^[a-z][a-z0-9_]*$" }),
+        ));
+    }
+    if description.is_empty() {
+        return Err(schema_error(
+            "schema.required",
+            "Relationship shorthand description is required.",
+            path,
+            serde_json::json!({ "required": "description" }),
+        ));
+    }
+
+    let mut mapping = serde_yaml_ng::Mapping::new();
+    mapping.insert(
+        serde_yaml_ng::Value::String("from".to_string()),
+        serde_yaml_ng::Value::String(from.to_string()),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("to".to_string()),
+        serde_yaml_ng::Value::String(to.to_string()),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("description".to_string()),
+        serde_yaml_ng::Value::String(description.to_string()),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("status".to_string()),
+        serde_yaml_ng::Value::String("live".to_string()),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("generated".to_string()),
+        serde_yaml_ng::Value::Bool(false),
+    );
+
+    Ok(serde_yaml_ng::Value::Mapping(mapping))
 }
 
 fn normalize_technology_aliases(
@@ -1765,6 +1893,67 @@ systems:
         let error = load_effective_model_from_repo(repo).expect_err("conflict should fail");
 
         assert_eq!(error.code, "semantic.conflicting_technology_alias");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn normalizes_unquoted_relationship_shorthand_mapping() {
+        let root = fresh_test_dir("relationship-shorthand-mapping");
+        write_model(
+            &root,
+            r#"
+name: Shorthand Mapping
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - customer -> banking: Views balances using
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("shorthand should load");
+
+        assert_eq!(effective.relationships.len(), 1);
+        assert_eq!(effective.relationships[0].from, "customer");
+        assert_eq!(effective.relationships[0].to, "banking");
+        assert_eq!(
+            effective.relationships[0].description,
+            "Views balances using"
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn normalizes_quoted_relationship_shorthand_string() {
+        let root = fresh_test_dir("relationship-shorthand-string");
+        write_model(
+            &root,
+            r#"
+name: Shorthand String
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - "customer -> banking: Calls (JSON/HTTPS)"
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("shorthand should load");
+
+        assert_eq!(effective.relationships.len(), 1);
+        assert_eq!(effective.relationships[0].from, "customer");
+        assert_eq!(effective.relationships[0].to, "banking");
+        assert_eq!(effective.relationships[0].description, "Calls (JSON/HTTPS)");
 
         cleanup(root);
     }
