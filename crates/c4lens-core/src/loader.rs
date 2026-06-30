@@ -57,7 +57,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     normalize_model(&mut model, false);
 
     let relationships = model.relationships.clone();
-    let elements_by_slug = flatten_elements(&model);
+    let elements_by_slug = flatten_elements(&model)?;
     validate_relationships(&relationships, &elements_by_slug)?;
     let issues = validate_code_paths(&repo_root, &elements_by_slug)?;
     let source_sha = stable_source_sha(&contents);
@@ -104,12 +104,16 @@ fn normalize_model(model: &mut Model, generated: bool) {
     }
 }
 
-fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
+fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, CommandError> {
     let mut output = BTreeMap::new();
+    let mut paths_by_slug = BTreeMap::new();
 
     for (slug, actor) in &model.actors {
-        output.insert(
-            slug.clone(),
+        insert_flattened_element(
+            &mut output,
+            &mut paths_by_slug,
+            slug,
+            format!("/actors/{slug}"),
             ElementNode {
                 base: base_with_slug(&actor.base, slug),
                 element_type: ElementType::Actor,
@@ -120,12 +124,15 @@ fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
                 kind: None,
                 source: SourceKind::Authored,
             },
-        );
+        )?;
     }
 
     for (system_slug, system) in &model.systems {
-        output.insert(
-            system_slug.clone(),
+        insert_flattened_element(
+            &mut output,
+            &mut paths_by_slug,
+            system_slug,
+            format!("/systems/{system_slug}"),
             ElementNode {
                 base: base_with_slug(&system.base, system_slug),
                 element_type: ElementType::System,
@@ -136,11 +143,14 @@ fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
                 kind: None,
                 source: SourceKind::Authored,
             },
-        );
+        )?;
 
         for (container_slug, container) in &system.containers {
-            output.insert(
-                container_slug.clone(),
+            insert_flattened_element(
+                &mut output,
+                &mut paths_by_slug,
+                container_slug,
+                format!("/systems/{system_slug}/containers/{container_slug}"),
                 ElementNode {
                     base: base_with_slug(&container.base, container_slug),
                     element_type: ElementType::Container,
@@ -151,11 +161,16 @@ fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
                     kind: Some(container.kind.clone()),
                     source: SourceKind::Authored,
                 },
-            );
+            )?;
 
             for (component_slug, component) in &container.components {
-                output.insert(
-                    component_slug.clone(),
+                insert_flattened_element(
+                    &mut output,
+                    &mut paths_by_slug,
+                    component_slug,
+                    format!(
+                        "/systems/{system_slug}/containers/{container_slug}/components/{component_slug}"
+                    ),
                     ElementNode {
                         base: base_with_slug(&component.base, component_slug),
                         element_type: ElementType::Component,
@@ -166,12 +181,36 @@ fn flatten_elements(model: &Model) -> BTreeMap<String, ElementNode> {
                         kind: None,
                         source: SourceKind::Authored,
                     },
-                );
+                )?;
             }
         }
     }
 
-    output
+    Ok(output)
+}
+
+fn insert_flattened_element(
+    output: &mut BTreeMap<String, ElementNode>,
+    paths_by_slug: &mut BTreeMap<String, String>,
+    slug: &str,
+    path: String,
+    node: ElementNode,
+) -> Result<(), CommandError> {
+    if let Some(first_path) = paths_by_slug.get(slug) {
+        return Err(CommandError::with_details(
+            "semantic.duplicate_slug",
+            "Model element slug is duplicated.",
+            serde_json::json!({
+                "slug": slug,
+                "path": path,
+                "firstPath": first_path,
+            }),
+        ));
+    }
+
+    paths_by_slug.insert(slug.to_string(), path);
+    output.insert(slug.to_string(), node);
+    Ok(())
 }
 
 fn validate_relationships(
@@ -2490,6 +2529,110 @@ relationships:
         let error = load_effective_model_from_repo(repo).expect_err("missing target should fail");
 
         assert_eq!(error.code, "semantic.unresolved_relationship_target");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_actor_and_system_slug() {
+        let root = fresh_test_dir("duplicate-actor-system-slug");
+        write_model(
+            &root,
+            r#"
+name: Duplicate Actor System Slug
+actors:
+  customer:
+    name: Customer
+systems:
+  customer:
+    name: Customer Portal
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate slug should fail");
+
+        assert_eq!(error.code, "semantic.duplicate_slug");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_system_and_container_slug() {
+        let root = fresh_test_dir("duplicate-system-container-slug");
+        write_model(
+            &root,
+            r#"
+name: Duplicate System Container Slug
+systems:
+  banking:
+    name: Banking
+    containers:
+      banking:
+        name: Banking API
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate slug should fail");
+
+        assert_eq!(error.code, "semantic.duplicate_slug");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_container_slug_across_systems() {
+        let root = fresh_test_dir("duplicate-container-across-systems");
+        write_model(
+            &root,
+            r#"
+name: Duplicate Container Across Systems
+systems:
+  banking:
+    name: Banking
+    containers:
+      api:
+        name: Banking API
+  payments:
+    name: Payments
+    containers:
+      api:
+        name: Payments API
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate slug should fail");
+
+        assert_eq!(error.code, "semantic.duplicate_slug");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_container_and_component_slug() {
+        let root = fresh_test_dir("duplicate-container-component-slug");
+        write_model(
+            &root,
+            r#"
+name: Duplicate Container Component Slug
+systems:
+  banking:
+    name: Banking
+    containers:
+      api:
+        name: API
+        components:
+          api:
+            name: API Controller
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate slug should fail");
+
+        assert_eq!(error.code, "semantic.duplicate_slug");
 
         cleanup(root);
     }

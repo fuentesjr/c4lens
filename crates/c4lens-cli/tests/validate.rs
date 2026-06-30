@@ -288,6 +288,45 @@ systems:
     cleanup(repo);
 }
 
+#[test]
+fn validate_json_outputs_validation_report_for_duplicate_slug() {
+    let repo = fresh_test_dir("duplicate-slug-json");
+    write_model(
+        &repo,
+        r#"
+name: Duplicate Slug
+actors:
+  customer:
+    name: Customer
+systems:
+  customer:
+    name: Customer Portal
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(1);
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["issues"][0]["severity"], "error");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(report["issues"][0]["code"], "semantic.duplicate_slug");
+    assert_eq!(report["issues"][0]["details"]["slug"], "customer");
+    assert_eq!(
+        report["issues"][0]["details"]["firstPath"],
+        "/actors/customer"
+    );
+    assert_eq!(report["issues"][0]["details"]["path"], "/systems/customer");
+
+    cleanup(repo);
+}
+
 fn write_model(repo: &PathBuf, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");
