@@ -234,7 +234,193 @@ fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, Comman
         )
     })?;
     reject_merge_keys(&value)?;
+    validate_top_level_model_schema(&value)?;
     Ok(value)
+}
+
+fn validate_top_level_model_schema(value: &serde_yaml_ng::Value) -> Result<(), CommandError> {
+    let serde_yaml_ng::Value::Mapping(mapping) = value else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            "Model document must be an object.",
+            "",
+            serde_json::json!({ "expected": "object" }),
+        ));
+    };
+
+    let mut has_name = false;
+    for (key, value) in mapping {
+        let Some(key) = yaml_string_value(key) else {
+            return Err(schema_error(
+                "schema.invalid_type",
+                "Model property names must be strings.",
+                "",
+                serde_json::json!({ "expected": "string" }),
+            ));
+        };
+
+        match key {
+            "name" => {
+                has_name = true;
+                validate_required_string(value, "/name", "Model name is required.")?;
+            }
+            "description" => {
+                validate_string(value, "/description", "Model description must be a string.")?
+            }
+            "generated" => validate_bool(
+                value,
+                "/generated",
+                "Model generated flag must be a boolean.",
+            )?,
+            "actors" => validate_mapping(value, "/actors", "Model actors must be an object.")?,
+            "systems" => validate_mapping(value, "/systems", "Model systems must be an object.")?,
+            "relationships" => validate_sequence(
+                value,
+                "/relationships",
+                "Model relationships must be an array.",
+            )?,
+            other => {
+                return Err(schema_error(
+                    "schema.additional_property",
+                    "Model contains an unsupported top-level property.",
+                    format!("/{other}"),
+                    serde_json::json!({ "property": other }),
+                ));
+            }
+        }
+    }
+
+    if !has_name {
+        return Err(schema_error(
+            "schema.required",
+            "Model name is required.",
+            "/name",
+            serde_json::json!({ "required": "name" }),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_string(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    if yaml_string_value(value).is_some() {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.invalid_type",
+        message,
+        path,
+        serde_json::json!({ "expected": "string" }),
+    ))
+}
+
+fn validate_required_string(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    let Some(value) = yaml_string_value(value) else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            message,
+            path,
+            serde_json::json!({ "expected": "string" }),
+        ));
+    };
+
+    if value.is_empty() {
+        return Err(schema_error(
+            "schema.required",
+            message,
+            path,
+            serde_json::json!({ "minLength": 1 }),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_bool(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    if matches!(value, serde_yaml_ng::Value::Bool(_)) {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.invalid_type",
+        message,
+        path,
+        serde_json::json!({ "expected": "boolean" }),
+    ))
+}
+
+fn validate_mapping(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    if matches!(value, serde_yaml_ng::Value::Mapping(_)) {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.invalid_type",
+        message,
+        path,
+        serde_json::json!({ "expected": "object" }),
+    ))
+}
+
+fn validate_sequence(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    if matches!(value, serde_yaml_ng::Value::Sequence(_)) {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.invalid_type",
+        message,
+        path,
+        serde_json::json!({ "expected": "array" }),
+    ))
+}
+
+fn yaml_string_value(value: &serde_yaml_ng::Value) -> Option<&str> {
+    match value {
+        serde_yaml_ng::Value::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn schema_error(
+    code: &'static str,
+    message: impl Into<String>,
+    path: impl Into<String>,
+    details: serde_json::Value,
+) -> CommandError {
+    let path = path.into();
+    let mut details = details;
+    if let Some(details) = details.as_object_mut() {
+        details.insert("path".to_string(), serde_json::Value::String(path));
+    } else {
+        details = serde_json::json!({
+            "path": path,
+            "details": details,
+        });
+    }
+
+    CommandError::with_details(code, message.into(), details)
 }
 
 fn reject_merge_keys(value: &serde_yaml_ng::Value) -> Result<(), CommandError> {
@@ -1057,6 +1243,97 @@ actors:
         let error = load_effective_model_from_repo(repo).expect_err("duplicate key should fail");
 
         assert_eq!(error.code, "parse.duplicate_key");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_missing_required_model_name_as_schema_error() {
+        let root = fresh_test_dir("schema-missing-name");
+        write_model(
+            &root,
+            r#"
+actors:
+  customer:
+    name: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("missing name should fail");
+
+        assert_eq!(error.code, "schema.required");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_non_string_model_name_as_schema_error() {
+        let root = fresh_test_dir("schema-invalid-name-type");
+        write_model(&root, "name: 42\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("invalid name should fail");
+
+        assert_eq!(error.code, "schema.invalid_type");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_top_level_additional_property_as_schema_error() {
+        let root = fresh_test_dir("schema-additional-property");
+        write_model(
+            &root,
+            r#"
+name: Additional Property
+unexpected: true
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("additional key should fail");
+
+        assert_eq!(error.code, "schema.additional_property");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_top_level_description_type_as_schema_error() {
+        let root = fresh_test_dir("schema-description-type");
+        write_model(&root, "name: Invalid Description\ndescription: false\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("description should fail");
+
+        assert_eq!(error.code, "schema.invalid_type");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_top_level_generated_type_as_schema_error() {
+        let root = fresh_test_dir("schema-generated-type");
+        write_model(&root, "name: Invalid Generated\ngenerated: yes please\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("generated should fail");
+
+        assert_eq!(error.code, "schema.invalid_type");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_top_level_collection_types_as_schema_error() {
+        let root = fresh_test_dir("schema-collection-types");
+        write_model(&root, "name: Invalid Collections\nactors: []\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("actors should fail");
+
+        assert_eq!(error.code, "schema.invalid_type");
 
         cleanup(root);
     }
