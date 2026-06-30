@@ -1901,9 +1901,16 @@ state, or the current repo model.
 Required interactions:
 
 - Pan, zoom, fit view, minimap.
-- Drill down from system to containers and container to components.
+- Drill-down gesture: double-click a system node to open that system's
+  container view; double-click a container node to open that container's
+  component view.
 - Breadcrumb up/across navigation.
 - Select node to show detail panel.
+- Detail panel action for drill-down: selected systems show `Open containers`
+  and selected containers show `Open components`; each button matches the
+  double-click destination.
+- Breadcrumb/scope navigation is the canonical “up/back” path from container
+  and component views.
 - Hover/select dependency highlighting.
 - Focus mode for incoming/outgoing dependencies.
 - Deep-linkable in-webview route keyed by `(scope, selected)`.
@@ -1933,6 +1940,10 @@ Route-to-scope mapping:
 The `ViewScope.level` names describe the C4 view being rendered, not the slug
 type carried in the route.
 
+`/#/system/:systemSlug` and `/#/container/:containerSlug` entries implement the
+scope transitions in 10.3 and 10.4 (system → container view, container →
+component view).
+
 Invalid route behavior:
 
 - If the route slug does not exist or has the wrong type for the route, render a
@@ -1953,6 +1964,13 @@ For selected element, show:
 - code path if present or indexed;
 - inline source preview when available;
 - open in editor action.
+
+If a non-external system or any container is selected, show a visible
+drill-down control (keyboard-focusable, activatable with Enter/Space) that
+navigates to:
+
+- `Open containers`: system → container view
+- `Open components`: container → component view
 
 Generated elements and relationships must be visibly marked.
 

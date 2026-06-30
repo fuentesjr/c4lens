@@ -200,6 +200,12 @@ export function App() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={(_, node) => setSelectedSlug(node.id)}
+            onNodeDoubleClick={(_, node) => {
+              const nextScope = nextScopeForDrilldown(model, scope, model.elementsBySlug[node.id]);
+              if (nextScope) {
+                setScope(nextScope);
+              }
+            }}
             onPaneClick={() => setSelectedSlug(null)}
             fitView
             minZoom={0.25}
@@ -211,7 +217,13 @@ export function App() {
           </ReactFlow>
         </section>
 
-        <DetailPanel selectedElement={selectedElement} view={view} model={model} />
+        <DetailPanel
+          selectedElement={selectedElement}
+          view={view}
+          model={model}
+          scope={scope}
+          onDrillDown={setScope}
+        />
       </main>
 
       <footer className="statusbar">
@@ -232,14 +244,19 @@ function DetailPanel({
   selectedElement,
   view,
   model,
+  scope,
+  onDrillDown,
 }: {
   selectedElement: ElementNode | null;
   view: DerivedView;
   model: EffectiveModel;
+  scope: ViewScope;
+  onDrillDown: (scope: ViewScope) => void;
 }) {
   const relatedEdges = selectedElement
     ? view.edges.filter((edge) => edge.source === selectedElement.slug || edge.target === selectedElement.slug)
     : [];
+  const drillTarget = nextScopeForDrilldown(model, scope, selectedElement);
 
   return (
     <aside className="detail-panel">
@@ -272,6 +289,11 @@ function DetailPanel({
               </>
             ) : null}
           </dl>
+          {drillTarget ? (
+            <button className="detail-action" onClick={() => onDrillDown(drillTarget)}>
+              {drillTarget.level === "component" ? "Open components" : "Open containers"}
+            </button>
+          ) : null}
           <h3>Relationships</h3>
           <div className="relationship-list">
             {relatedEdges.length > 0 ? (
@@ -363,6 +385,28 @@ function currentSystemSlug(model: EffectiveModel, scope: ViewScope): string | nu
   }
   if (scope.level === "component") {
     return model.elementsBySlug[scope.slug]?.systemSlug ?? null;
+  }
+  return null;
+}
+
+function nextScopeForDrilldown(
+  model: EffectiveModel,
+  scope: ViewScope,
+  selectedElement: ElementNode | null,
+): ViewScope | null {
+  if (!selectedElement) {
+    return null;
+  }
+  if (scope.level === "context" && selectedElement.type === "system" && !selectedElement.external) {
+    return { level: "container", slug: selectedElement.slug };
+  }
+  if (
+    scope.level === "container" &&
+    selectedElement.type === "container" &&
+    selectedElement.systemSlug === scope.slug &&
+    model.elementsBySlug[scope.slug]?.type === "system"
+  ) {
+    return { level: "component", slug: selectedElement.slug };
   }
   return null;
 }

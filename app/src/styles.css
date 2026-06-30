@@ -346,6 +346,17 @@ input {
   color: #26323f;
 }
 
+.detail-action {
+  margin: 0 0 14px;
+  height: 34px;
+  width: 100%;
+  border: 1px solid #8f3f71;
+  border-radius: 7px;
+  background: #8f3f71;
+  color: #ffffff;
+  cursor: pointer;
+}
+
 .detail-panel h3 {
   margin: 0 0 10px;
   font-size: 13px;
