@@ -91,7 +91,7 @@ fn validate_json_outputs_validation_report_for_invalid_yaml() {
 
     assert_eq!(report["ok"], false);
     assert_eq!(report["issues"][0]["severity"], "error");
-    assert_eq!(report["issues"][0]["code"], "model.invalid");
+    assert_eq!(report["issues"][0]["code"], "parse.invalid_yaml");
 
     cleanup(repo);
 }

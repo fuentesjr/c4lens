@@ -46,7 +46,8 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut model: Model = serde_yaml_ng::from_str(&contents).map_err(|error| {
+    let value = parse_plain_yaml_value(&contents)?;
+    let mut model: Model = serde_yaml_ng::from_value(value).map_err(|error| {
         CommandError::with_details(
             "model.invalid",
             "Failed to parse c4/model.yml.",
@@ -181,6 +182,385 @@ fn stable_source_sha(contents: &str) -> String {
     format!("{:x}", Sha256::digest(contents.as_bytes()))
 }
 
+fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, CommandError> {
+    reject_anchor_and_alias_tokens(contents)?;
+
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(contents).map_err(|error| {
+        let message = error.to_string();
+        if message.contains("duplicate entry") {
+            return CommandError::with_details(
+                "parse.duplicate_key",
+                "YAML duplicate keys are unsupported.",
+                serde_json::json!({ "error": message }),
+            );
+        }
+
+        CommandError::with_details(
+            "parse.invalid_yaml",
+            "Failed to parse c4/model.yml.",
+            serde_json::json!({ "error": message }),
+        )
+    })?;
+    reject_merge_keys(&value)?;
+    Ok(value)
+}
+
+fn reject_merge_keys(value: &serde_yaml_ng::Value) -> Result<(), CommandError> {
+    match value {
+        serde_yaml_ng::Value::Sequence(items) => {
+            for item in items {
+                reject_merge_keys(item)?;
+            }
+        }
+        serde_yaml_ng::Value::Mapping(mapping) => {
+            for (key, value) in mapping {
+                if matches!(key, serde_yaml_ng::Value::String(key) if key == "<<") {
+                    return Err(CommandError::new(
+                        "parse.unsupported_yaml_feature",
+                        "YAML merge keys are unsupported.",
+                    ));
+                }
+                reject_merge_keys(key)?;
+                reject_merge_keys(value)?;
+            }
+        }
+        serde_yaml_ng::Value::Tagged(tagged) => {
+            reject_merge_keys(&tagged.value)?;
+        }
+        serde_yaml_ng::Value::Null
+        | serde_yaml_ng::Value::Bool(_)
+        | serde_yaml_ng::Value::Number(_)
+        | serde_yaml_ng::Value::String(_) => {}
+    }
+
+    Ok(())
+}
+
+fn reject_anchor_and_alias_tokens(contents: &str) -> Result<(), CommandError> {
+    let mut block_scalar_parent_indent = None;
+    let mut plain_scalar_parent_indent = None;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for (line_index, line) in contents.lines().enumerate() {
+        let line_indent = leading_space_count(line);
+        if let Some(parent_indent) = block_scalar_parent_indent {
+            if line.trim().is_empty() || line_indent > parent_indent {
+                continue;
+            }
+            block_scalar_parent_indent = None;
+        }
+        if let Some(parent_indent) = plain_scalar_parent_indent {
+            if line.trim().is_empty() || line_indent > parent_indent {
+                continue;
+            }
+            plain_scalar_parent_indent = None;
+        }
+
+        let mut escaped = false;
+        let mut starts_block_scalar = None;
+        let chars: Vec<(usize, char)> = line.char_indices().collect();
+
+        for (char_index, (byte_index, character)) in chars.iter().enumerate() {
+            if in_double_quote && escaped {
+                escaped = false;
+                continue;
+            }
+
+            match character {
+                '\\' if in_double_quote => {
+                    escaped = true;
+                }
+                '\'' if !in_double_quote => {
+                    in_single_quote = !in_single_quote;
+                }
+                '"' if !in_single_quote => {
+                    in_double_quote = !in_double_quote;
+                }
+                '#' if !in_single_quote
+                    && !in_double_quote
+                    && is_yaml_comment_start(&chars, char_index) =>
+                {
+                    break;
+                }
+                '&' | '*' if !in_single_quote && !in_double_quote => {
+                    if is_yaml_anchor_or_alias_token(line, &chars, char_index) {
+                        return Err(CommandError::with_details(
+                            "parse.unsupported_yaml_feature",
+                            "YAML anchors and aliases are unsupported.",
+                            serde_json::json!({
+                                "line": line_index + 1,
+                                "column": byte_index + 1,
+                            }),
+                        ));
+                    }
+                }
+                '|' | '>' if !in_single_quote && !in_double_quote => {
+                    if is_yaml_block_scalar_token(line, &chars, char_index) {
+                        starts_block_scalar = Some(block_scalar_parent_indent_for_line(
+                            line, &chars, char_index,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(parent_indent) = starts_block_scalar {
+            block_scalar_parent_indent = Some(parent_indent);
+            plain_scalar_parent_indent = None;
+        } else if !in_single_quote && !in_double_quote {
+            plain_scalar_parent_indent = plain_scalar_parent_indent_for_line(line, &chars);
+        }
+    }
+
+    Ok(())
+}
+
+fn leading_space_count(line: &str) -> usize {
+    line.chars()
+        .take_while(|character| *character == ' ')
+        .count()
+}
+
+fn block_scalar_parent_indent_for_line(
+    line: &str,
+    chars: &[(usize, char)],
+    marker_index: usize,
+) -> usize {
+    let line_indent = leading_space_count(line);
+    let Some((byte_index, _)) = chars.get(marker_index) else {
+        return line_indent;
+    };
+
+    let prefix_after_indent = line[line_indent..*byte_index].trim_end();
+    let Some(after_dash) = prefix_after_indent.strip_prefix('-') else {
+        return line_indent;
+    };
+    let separation_spaces = after_dash
+        .chars()
+        .take_while(|character| *character == ' ')
+        .count();
+    if separation_spaces == 0 {
+        return line_indent;
+    }
+
+    if after_dash[separation_spaces..].contains(':') {
+        line_indent + 1 + separation_spaces
+    } else {
+        line_indent
+    }
+}
+
+fn plain_scalar_parent_indent_for_line(line: &str, chars: &[(usize, char)]) -> Option<usize> {
+    let line_indent = leading_space_count(line);
+    let comment_start = comment_start_byte(line, chars);
+    let significant = line[..comment_start].trim_end();
+    if significant.trim().is_empty() {
+        return None;
+    }
+
+    if let Some(colon_byte) = mapping_value_colon(chars, comment_start) {
+        let value = line[colon_byte + 1..comment_start].trim_start();
+        if is_plain_scalar_value(value) {
+            return Some(mapping_parent_indent_for_colon(line, colon_byte));
+        }
+        return None;
+    }
+
+    let after_indent = &significant[line_indent..];
+    let Some(after_dash) = after_indent.strip_prefix('-') else {
+        return None;
+    };
+    let separation_spaces = after_dash
+        .chars()
+        .take_while(|character| *character == ' ')
+        .count();
+    if separation_spaces == 0 {
+        return None;
+    }
+
+    is_plain_scalar_value(&after_dash[separation_spaces..]).then_some(line_indent)
+}
+
+fn comment_start_byte(line: &str, chars: &[(usize, char)]) -> usize {
+    for (char_index, (byte_index, character)) in chars.iter().enumerate() {
+        if *character == '#' && is_yaml_comment_start(chars, char_index) {
+            return *byte_index;
+        }
+    }
+
+    line.len()
+}
+
+fn mapping_value_colon(chars: &[(usize, char)], comment_start: usize) -> Option<usize> {
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+
+    for (char_index, (byte_index, character)) in chars.iter().enumerate() {
+        if *byte_index >= comment_start {
+            break;
+        }
+        if in_double_quote && escaped {
+            escaped = false;
+            continue;
+        }
+
+        match character {
+            '\\' if in_double_quote => {
+                escaped = true;
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            ':' if !in_single_quote && !in_double_quote => {
+                let next = chars.get(char_index + 1).map(|(_, character)| *character);
+                if next.is_none_or(|character| character.is_whitespace()) {
+                    return Some(*byte_index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn mapping_parent_indent_for_colon(line: &str, colon_byte: usize) -> usize {
+    let line_indent = leading_space_count(line);
+    let prefix_after_indent = line[line_indent..colon_byte].trim_end();
+    let Some(after_dash) = prefix_after_indent.strip_prefix('-') else {
+        return line_indent;
+    };
+    let separation_spaces = after_dash
+        .chars()
+        .take_while(|character| *character == ' ')
+        .count();
+
+    if separation_spaces > 0 && !after_dash[separation_spaces..].trim().is_empty() {
+        line_indent + 1 + separation_spaces
+    } else {
+        line_indent
+    }
+}
+
+fn is_plain_scalar_value(value: &str) -> bool {
+    let mut value = value.trim_start();
+    while value.starts_with('!') {
+        let Some(tag_end) = value.find(char::is_whitespace) else {
+            return false;
+        };
+        value = value[tag_end..].trim_start();
+    }
+
+    !value.is_empty()
+        && !matches!(
+            value.chars().next(),
+            Some('\'' | '"' | '|' | '>' | '[' | '{' | '&' | '*')
+        )
+}
+
+fn is_yaml_anchor_or_alias_token(line: &str, chars: &[(usize, char)], marker_index: usize) -> bool {
+    let Some((byte_index, marker)) = chars.get(marker_index) else {
+        return false;
+    };
+    if *marker != '&' && *marker != '*' {
+        return false;
+    }
+
+    let next = line[*byte_index + marker.len_utf8()..].chars().next();
+    if !matches!(next, Some(character) if character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return false;
+    }
+
+    if let Some((_, previous)) = marker_index
+        .checked_sub(1)
+        .and_then(|index| chars.get(index))
+    {
+        if !previous.is_whitespace() && !is_yaml_token_boundary(*previous) {
+            return false;
+        }
+    }
+
+    let previous = chars[..marker_index]
+        .iter()
+        .rev()
+        .find_map(|(_, character)| (!character.is_whitespace()).then_some(*character));
+
+    previous.is_none()
+        || matches!(previous, Some(':' | '[' | '{' | ',' | '-' | '?'))
+        || previous_token_is_yaml_tag(line, chars, marker_index)
+}
+
+fn is_yaml_block_scalar_token(line: &str, chars: &[(usize, char)], marker_index: usize) -> bool {
+    let Some((byte_index, marker)) = chars.get(marker_index) else {
+        return false;
+    };
+    if *marker != '|' && *marker != '>' {
+        return false;
+    }
+
+    if let Some((_, previous)) = marker_index
+        .checked_sub(1)
+        .and_then(|index| chars.get(index))
+    {
+        if !previous.is_whitespace() && !is_yaml_token_boundary(*previous) {
+            return false;
+        }
+    }
+
+    let previous = chars[..marker_index]
+        .iter()
+        .rev()
+        .find_map(|(_, character)| (!character.is_whitespace()).then_some(*character));
+    if previous.is_some()
+        && !matches!(previous, Some(':' | '[' | '{' | ',' | '-' | '?'))
+        && !previous_token_is_yaml_tag(line, chars, marker_index)
+    {
+        return false;
+    }
+
+    let mut rest = line[*byte_index + marker.len_utf8()..].chars().peekable();
+    if matches!(rest.peek(), Some('+' | '-')) {
+        rest.next();
+    }
+    while matches!(rest.peek(), Some(character) if character.is_ascii_digit()) {
+        rest.next();
+    }
+    let remainder = rest.collect::<String>();
+    let remainder = remainder.trim_start();
+
+    remainder.is_empty() || remainder.starts_with('#')
+}
+
+fn is_yaml_comment_start(chars: &[(usize, char)], marker_index: usize) -> bool {
+    chars[..marker_index]
+        .last()
+        .is_none_or(|(_, character)| character.is_whitespace())
+}
+
+fn is_yaml_token_boundary(character: char) -> bool {
+    matches!(character, ':' | '[' | '{' | ',' | '-' | '?')
+}
+
+fn previous_token_is_yaml_tag(line: &str, chars: &[(usize, char)], marker_index: usize) -> bool {
+    let Some((byte_index, _)) = chars.get(marker_index) else {
+        return false;
+    };
+    let before = line[..*byte_index].trim_end();
+    let token_start = before
+        .rfind(char::is_whitespace)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+
+    before[token_start..].starts_with('!')
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -299,6 +679,359 @@ relationships:
 
         cleanup(root);
         cleanup(outside);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_before_loading_model() {
+        let root = fresh_test_dir("yaml-anchor");
+        write_model(
+            &root,
+            r#"
+name: Anchored
+actors:
+  customer: &customer
+    name: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_alias_before_loading_model() {
+        let root = fresh_test_dir("yaml-alias");
+        write_model(
+            &root,
+            r#"
+name: Alias
+actors:
+  customer: *customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("alias should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_in_explicit_mapping_key() {
+        let root = fresh_test_dir("yaml-explicit-key-anchor");
+        write_model(
+            &root,
+            r#"
+name: Explicit Anchor
+actors:
+  ? &customer customer
+  : name: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_alias_in_explicit_mapping_key() {
+        let root = fresh_test_dir("yaml-explicit-key-alias");
+        write_model(
+            &root,
+            r#"
+name: Explicit Alias
+actors:
+  ? &customer customer
+  : name: Customer
+systems:
+  ? *customer
+  : name: Customer System
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("alias should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_after_tag() {
+        let root = fresh_test_dir("yaml-tagged-anchor");
+        write_model(&root, "name: !str &modelName Tagged Anchor\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_in_flow_mapping() {
+        let root = fresh_test_dir("yaml-flow-anchor");
+        write_model(
+            &root,
+            r#"
+name: Flow Anchor
+actors: { customer: &customer { name: Customer } }
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_after_compact_sequence_block_scalar() {
+        let root = fresh_test_dir("yaml-anchor-after-sequence-block-scalar");
+        write_model(
+            &root,
+            r#"
+name: Hidden Anchor
+relationships:
+  - description: |
+      Uses
+    from: &source customer
+    to: *source
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_after_extra_spaced_sequence_block_scalar() {
+        let root = fresh_test_dir("yaml-anchor-after-extra-spaced-sequence-block-scalar");
+        write_model(
+            &root,
+            r#"
+name: Hidden Anchor
+relationships:
+  -   description: |
+        Uses
+      from: &source customer
+      to: *source
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_anchor_after_hash_in_plain_flow_scalar() {
+        let root = fresh_test_dir("yaml-flow-hash-anchor");
+        write_model(
+            &root,
+            r#"
+name: Flow Hash
+actors: { a: { name: foo#bar }, customer: &customer { name: Customer } }
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("anchor should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn allows_anchor_like_text_inside_quotes_and_comments() {
+        let root = fresh_test_dir("yaml-quoted-anchor-text");
+        write_model(
+            &root,
+            r#"
+name: "Quoted *not_alias &not_anchor"
+description: 'Single quoted *text & text'
+# *commented_alias &commented_anchor
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("quoted text should load");
+
+        assert_eq!(effective.model.name, "Quoted *not_alias &not_anchor");
+        assert_eq!(
+            effective.model.description.as_deref(),
+            Some("Single quoted *text & text")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn allows_anchor_like_text_inside_multiline_quotes() {
+        let root = fresh_test_dir("yaml-multiline-quoted-anchor-text");
+        write_model(
+            &root,
+            r#"
+name: Multiline Quoted
+description: "first line
+  &literal ampersand
+  *literal star"
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective =
+            load_effective_model_from_repo(repo).expect("multiline quoted text should load");
+
+        assert_eq!(effective.model.name, "Multiline Quoted");
+        assert_eq!(
+            effective.model.description.as_deref(),
+            Some("first line &literal ampersand *literal star")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn allows_anchor_like_text_inside_multiline_plain_scalar() {
+        let root = fresh_test_dir("yaml-multiline-plain-anchor-text");
+        write_model(
+            &root,
+            r#"
+name: Plain Multiline
+description: first line
+  &literal ampersand
+  *literal star
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective =
+            load_effective_model_from_repo(repo).expect("multiline plain text should load");
+
+        assert_eq!(effective.model.name, "Plain Multiline");
+        assert_eq!(
+            effective.model.description.as_deref(),
+            Some("first line &literal ampersand *literal star")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn allows_anchor_like_text_inside_block_scalar() {
+        let root = fresh_test_dir("yaml-block-scalar-text");
+        write_model(
+            &root,
+            r#"
+name: Block Scalar
+description: |
+  *important note
+  & another note
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("block scalar should load");
+
+        assert_eq!(effective.model.name, "Block Scalar");
+        assert_eq!(
+            effective.model.description.as_deref(),
+            Some("*important note\n& another note\n")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_yaml_merge_key_before_loading_model() {
+        let root = fresh_test_dir("yaml-merge-key");
+        write_model(
+            &root,
+            r#"
+name: Merge Key
+actors:
+  customer:
+    <<:
+      name: Customer
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("merge key should fail");
+
+        assert_eq!(error.code, "parse.unsupported_yaml_feature");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_yaml_keys_before_loading_model() {
+        let root = fresh_test_dir("duplicate-key");
+        write_model(
+            &root,
+            r#"
+name: First
+name: Second
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate key should fail");
+
+        assert_eq!(error.code, "parse.duplicate_key");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_nested_duplicate_yaml_keys_before_loading_model() {
+        let root = fresh_test_dir("nested-duplicate-key");
+        write_model(
+            &root,
+            r#"
+name: Nested Duplicate
+actors:
+  customer:
+    name: Customer
+  customer:
+    name: Customer Duplicate
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("duplicate key should fail");
+
+        assert_eq!(error.code, "parse.duplicate_key");
+
+        cleanup(root);
+    }
+
+    fn write_model(root: &PathBuf, contents: &str) {
+        fs::create_dir_all(root.join("c4")).expect("create c4 dir");
+        fs::write(root.join("c4/model.yml"), contents).expect("write model");
     }
 
     fn fresh_test_dir(name: &str) -> PathBuf {
