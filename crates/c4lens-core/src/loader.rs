@@ -480,6 +480,9 @@ fn validate_top_level_model_schema(value: &serde_yaml_ng::Value) -> Result<(), C
     if let Some(systems) = mapping_value(mapping, "systems") {
         validate_system_map(systems, "/systems")?;
     }
+    if let Some(relationships) = mapping_value(mapping, "relationships") {
+        validate_relationship_items(relationships, "/relationships")?;
+    }
 
     Ok(())
 }
@@ -556,6 +559,125 @@ fn validate_container(value: &serde_yaml_ng::Value, path: &str) -> Result<(), Co
             "components" => validate_component_map(value, &format!("{path}/components"))?,
             _ => {}
         }
+    }
+
+    Ok(())
+}
+
+fn validate_relationship_items(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+) -> Result<(), CommandError> {
+    let serde_yaml_ng::Value::Sequence(relationships) = value else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            "Model relationships must be an array.",
+            path,
+            serde_json::json!({ "expected": "array" }),
+        ));
+    };
+
+    for (index, relationship) in relationships.iter().enumerate() {
+        validate_relationship_schema(relationship, &format!("{path}/{index}"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_relationship_schema(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+) -> Result<(), CommandError> {
+    let mapping = expect_mapping(value, path, "Relationship must be an object.")?;
+    let mut has_from = false;
+    let mut has_to = false;
+    let mut has_description = false;
+
+    for (key, value) in mapping {
+        let Some(key) = yaml_string_value(key) else {
+            return Err(schema_error(
+                "schema.invalid_type",
+                "Relationship property names must be strings.",
+                path,
+                serde_json::json!({ "expected": "string" }),
+            ));
+        };
+
+        match key {
+            "from" => {
+                has_from = true;
+                validate_slug_value(
+                    value,
+                    &format!("{path}/from"),
+                    "Relationship source must be a valid slug.",
+                )?;
+            }
+            "to" => {
+                has_to = true;
+                validate_slug_value(
+                    value,
+                    &format!("{path}/to"),
+                    "Relationship target must be a valid slug.",
+                )?;
+            }
+            "description" => {
+                has_description = true;
+                validate_required_string(
+                    value,
+                    &format!("{path}/description"),
+                    "Relationship description is required.",
+                )?;
+            }
+            "tech" | "technology" => validate_string(
+                value,
+                &format!("{path}/{key}"),
+                "Relationship technology must be a string.",
+            )?,
+            "status" => validate_enum(
+                value,
+                &format!("{path}/status"),
+                "Relationship status is unsupported.",
+                &["live", "planned", "deprecated"],
+            )?,
+            "generated" => validate_bool(
+                value,
+                &format!("{path}/generated"),
+                "Relationship generated flag must be a boolean.",
+            )?,
+            other => {
+                return Err(schema_error(
+                    "schema.additional_property",
+                    "Relationship contains an unsupported property.",
+                    format!("{path}/{other}"),
+                    serde_json::json!({ "property": other }),
+                ));
+            }
+        }
+    }
+
+    if !has_from {
+        return Err(schema_error(
+            "schema.required",
+            "Relationship source is required.",
+            format!("{path}/from"),
+            serde_json::json!({ "required": "from" }),
+        ));
+    }
+    if !has_to {
+        return Err(schema_error(
+            "schema.required",
+            "Relationship target is required.",
+            format!("{path}/to"),
+            serde_json::json!({ "required": "to" }),
+        ));
+    }
+    if !has_description {
+        return Err(schema_error(
+            "schema.required",
+            "Relationship description is required.",
+            format!("{path}/description"),
+            serde_json::json!({ "required": "description" }),
+        ));
     }
 
     Ok(())
@@ -756,6 +878,32 @@ fn validate_enum(
         message,
         path,
         serde_json::json!({ "allowed": allowed }),
+    ))
+}
+
+fn validate_slug_value(
+    value: &serde_yaml_ng::Value,
+    path: &str,
+    message: &str,
+) -> Result<(), CommandError> {
+    let Some(slug) = yaml_string_value(value) else {
+        return Err(schema_error(
+            "schema.invalid_type",
+            message,
+            path,
+            serde_json::json!({ "expected": "string" }),
+        ));
+    };
+
+    if is_valid_slug(slug) {
+        return Ok(());
+    }
+
+    Err(schema_error(
+        "schema.pattern",
+        message,
+        path,
+        serde_json::json!({ "pattern": "^[a-z][a-z0-9_]*$" }),
     ))
 }
 
@@ -1954,6 +2102,177 @@ relationships:
         assert_eq!(effective.relationships[0].from, "customer");
         assert_eq!(effective.relationships[0].to, "banking");
         assert_eq!(effective.relationships[0].description, "Calls (JSON/HTTPS)");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_missing_required_description_as_schema_error() {
+        let root = fresh_test_dir("relationship-missing-description");
+        write_model(
+            &root,
+            r#"
+name: Missing Relationship Description
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("schema should fail");
+
+        assert_eq!(error.code, "schema.required");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_invalid_endpoint_slug_as_schema_error() {
+        let root = fresh_test_dir("relationship-invalid-endpoint-slug");
+        write_model(
+            &root,
+            r#"
+name: Invalid Relationship Endpoint
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: Customer
+    to: banking
+    description: Uses
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("schema should fail");
+
+        assert_eq!(error.code, "schema.pattern");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_additional_property_as_schema_error() {
+        let root = fresh_test_dir("relationship-additional-property");
+        write_model(
+            &root,
+            r#"
+name: Extra Relationship Property
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    protocol: HTTPS
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("schema should fail");
+
+        assert_eq!(error.code, "schema.additional_property");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_invalid_status_as_schema_error() {
+        let root = fresh_test_dir("relationship-invalid-status");
+        write_model(
+            &root,
+            r#"
+name: Invalid Relationship Status
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    status: retired
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("schema should fail");
+
+        assert_eq!(error.code, "schema.pattern");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rejects_relationship_generated_type_as_schema_error() {
+        let root = fresh_test_dir("relationship-generated-type");
+        write_model(
+            &root,
+            r#"
+name: Invalid Relationship Generated Flag
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    generated: "false"
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("schema should fail");
+
+        assert_eq!(error.code, "schema.invalid_type");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn normalizes_relationship_technology_alias() {
+        let root = fresh_test_dir("relationship-technology-alias");
+        write_model(
+            &root,
+            r#"
+name: Relationship Technology Alias
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    technology: HTTPS
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("alias should load");
+
+        assert_eq!(effective.relationships[0].tech.as_deref(), Some("HTTPS"));
 
         cleanup(root);
     }

@@ -146,6 +146,44 @@ unexpected: true
 }
 
 #[test]
+fn validate_json_outputs_validation_report_for_relationship_schema_error() {
+    let repo = fresh_test_dir("relationship-schema-error-json");
+    write_model(
+        &repo,
+        r#"
+name: Relationship Schema Error
+actors:
+  customer:
+    name: Customer
+systems:
+  banking:
+    name: Banking
+relationships:
+  - from: customer
+    to: banking
+    description: Uses
+    protocol: HTTPS
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(1);
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["issues"][0]["severity"], "error");
+    assert_eq!(report["issues"][0]["stage"], "schema");
+    assert_eq!(report["issues"][0]["code"], "schema.additional_property");
+
+    cleanup(repo);
+}
+
+#[test]
 fn validate_json_outputs_validation_report_for_unresolved_relationship() {
     let repo = fresh_test_dir("unresolved-relationship-json");
     write_model(
