@@ -369,6 +369,11 @@ input {
   gap: 8px;
 }
 
+.validation-list {
+  display: grid;
+  gap: 8px;
+}
+
 .relationship-item {
   display: grid;
   gap: 4px;
@@ -382,6 +387,21 @@ input {
 
 .relationship-item strong {
   color: #8f3f71;
+}
+
+.validation-item {
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  border: 1px solid #f0d7aa;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #344454;
+  font-size: 12px;
+}
+
+.validation-item strong {
+  color: #a15c00;
 }
 
 .muted {

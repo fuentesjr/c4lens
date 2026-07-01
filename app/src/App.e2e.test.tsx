@@ -29,6 +29,24 @@ type MockDerivedEdge = {
   target: string;
 };
 
+vi.mock("./model/sample", async () => {
+  const actual = await vi.importActual<typeof import("./model/sample")>("./model/sample");
+
+  return {
+    ...actual,
+    sampleModel: {
+      ...actual.sampleModel,
+      validation: {
+        ...actual.sampleModel.validation,
+        issues: actual.sampleModel.validation.issues.map((issue) => ({
+          ...issue,
+          path: issue.path ?? "/sample/model",
+        })),
+      },
+    },
+  };
+});
+
 vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual<typeof import("@xyflow/react")>("@xyflow/react");
 
@@ -316,6 +334,28 @@ describe("App drill-down renderer behavior", () => {
     expect(labels).toContain("Acme API");
     expect(labels).toContain("Payments");
     expect(labels).not.toContain("API Server");
+
+    cleanup();
+  });
+});
+
+describe("App validation warning surface", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("surfaces validation warnings without blocking the canvas", async () => {
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("1 warning");
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain("Valid sample");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("schema.phase0_placeholder");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain(
+      "No model files loaded yet. Using phase-0 sample model.",
+    );
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("/sample/model");
+    expect(getCanvasLabels(container)).toEqual(["Customer", "Acme API", "Payments"]);
 
     cleanup();
   });

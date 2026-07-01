@@ -27,7 +27,7 @@ import {
 import { openRepositoryFromDialog, fetchActiveModel, isTauriDesktop } from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ElementNode } from "./model/types";
+import type { EffectiveModel, ElementNode, ValidationIssue } from "./model/types";
 import {
   availableContainers,
   availableSystems,
@@ -53,6 +53,10 @@ export function App() {
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
+  const warningIssues = useMemo(
+    () => model.validation.issues.filter((issue) => issue.severity === "warning"),
+    [model.validation.issues],
+  );
   const systems = useMemo(() => availableSystems(model), [model]);
   const activeSystemSlug = scope.level === "context" ? systems[0]?.slug : currentSystemSlug(model, scope);
   const containers = useMemo(
@@ -222,14 +226,19 @@ export function App() {
           view={view}
           model={model}
           scope={scope}
+          warningIssues={warningIssues}
           onDrillDown={setScope}
         />
       </main>
 
       <footer className="statusbar">
-        <span className={model.validation.ok ? "status-ok" : "status-warning"}>
-          {model.validation.ok ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-          {model.validation.ok ? "Valid sample" : "Validation issues"}
+        <span className={model.validation.ok && warningIssues.length === 0 ? "status-ok" : "status-warning"}>
+          {model.validation.ok && warningIssues.length === 0 ? (
+            <CheckCircle2 size={15} />
+          ) : (
+            <AlertTriangle size={15} />
+          )}
+          {validationStatusText(model, warningIssues)}
         </span>
         <span>{status}</span>
         <span>{layoutStatus}</span>
@@ -245,12 +254,14 @@ function DetailPanel({
   view,
   model,
   scope,
+  warningIssues,
   onDrillDown,
 }: {
   selectedElement: ElementNode | null;
   view: DerivedView;
   model: EffectiveModel;
   scope: ViewScope;
+  warningIssues: ValidationIssue[];
   onDrillDown: (scope: ViewScope) => void;
 }) {
   const relatedEdges = selectedElement
@@ -323,12 +334,38 @@ function DetailPanel({
             <dt>Repository</dt>
             <dd>{model.repo.name}</dd>
             <dt>Validation</dt>
-            <dd>{model.validation.ok ? "ok" : "issues"}</dd>
+            <dd>{validationStatusText(model, warningIssues)}</dd>
           </dl>
+          {model.validation.ok && warningIssues.length > 0 ? (
+            <>
+              <h3>Warnings</h3>
+              <div className="validation-list">
+                {warningIssues.map((issue, index) => (
+                  <div className="validation-item" key={`${issue.code}-${issue.path ?? "model"}-${index}`}>
+                    <strong>{issue.code}</strong>
+                    <span>{issue.message}</span>
+                    {issue.path ? <span>{issue.path}</span> : null}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
         </>
       )}
     </aside>
   );
+}
+
+function validationStatusText(model: EffectiveModel, warningIssues: ValidationIssue[]): string {
+  if (!model.validation.ok) {
+    return "Validation issues";
+  }
+
+  if (warningIssues.length > 0) {
+    return `${warningIssues.length} ${warningIssues.length === 1 ? "warning" : "warnings"}`;
+  }
+
+  return "Valid model";
 }
 
 function C4Node({ data, selected }: NodeProps) {
