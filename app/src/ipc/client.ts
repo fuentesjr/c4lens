@@ -87,6 +87,14 @@ export async function getElementCode(slug: string): Promise<CodeRef | null> {
   return await invoke<CodeRef | null>("get_element_code", { params: { slug } });
 }
 
+export async function openInEditor(path: string, line?: number, column?: number): Promise<void> {
+  if (!isTauriDesktop()) {
+    return;
+  }
+
+  await invoke("open_in_editor", { params: { path, line, column } });
+}
+
 export async function listenToModelEvents(handlers: ModelEventHandlers): Promise<UnlistenFn> {
   if (!isTauriDesktop()) {
     return () => {};

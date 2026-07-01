@@ -30,6 +30,7 @@ import {
   isTauriDesktop,
   listenToModelEvents,
   openRepositoryFromDialog,
+  openInEditor,
   scanCodebase,
 } from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
@@ -422,6 +423,19 @@ export function App() {
     }
   }, []);
 
+  const openSourceInEditor = useCallback(async () => {
+    if (!isTauriDesktop() || sourcePreview.status !== "ready") {
+      return;
+    }
+
+    try {
+      await openInEditor(sourcePreview.codeRef.path);
+      setStatus(`Opened ${sourcePreview.codeRef.path}`);
+    } catch (error) {
+      setStatus(errorStatus(error, "Failed to open source"));
+    }
+  }, [sourcePreview]);
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -517,6 +531,7 @@ export function App() {
           warningIssues={warningIssues}
           errorIssues={errorIssues}
           onDrillDown={navigateTo}
+          onOpenInEditor={openSourceInEditor}
         />
       </main>
 
@@ -568,6 +583,7 @@ function DetailPanel({
   warningIssues,
   errorIssues,
   onDrillDown,
+  onOpenInEditor,
 }: {
   selectedElement: ElementNode | null;
   sourcePreview: SourcePreviewState;
@@ -578,6 +594,7 @@ function DetailPanel({
   warningIssues: ValidationIssue[];
   errorIssues: ValidationIssue[];
   onDrillDown: (scope: ViewScope) => void;
+  onOpenInEditor: () => void;
 }) {
   const relatedEdges = selectedElement
     ? view.edges.filter((edge) => edge.source === selectedElement.slug || edge.target === selectedElement.slug)
@@ -615,7 +632,7 @@ function DetailPanel({
               </>
             ) : null}
           </dl>
-          <SourcePreview state={sourcePreview} />
+          <SourcePreview state={sourcePreview} onOpenInEditor={onOpenInEditor} />
           {drillTarget ? (
             <button className="detail-action" onClick={() => onDrillDown(drillTarget)}>
               {drillTarget.level === "component" ? "Open components" : "Open containers"}
@@ -678,7 +695,13 @@ function DetailPanel({
   );
 }
 
-function SourcePreview({ state }: { state: SourcePreviewState }) {
+function SourcePreview({
+  state,
+  onOpenInEditor,
+}: {
+  state: SourcePreviewState;
+  onOpenInEditor: () => void;
+}) {
   if (state.status === "idle") {
     return null;
   }
@@ -695,6 +718,10 @@ function SourcePreview({ state }: { state: SourcePreviewState }) {
             <span>{state.codeRef.path}</span>
             {state.codeRef.language ? <span>{state.codeRef.language}</span> : null}
           </div>
+          <button className="detail-action" onClick={onOpenInEditor}>
+            <ExternalLink size={14} aria-hidden="true" />
+            <span>Jump to code</span>
+          </button>
           {state.codeRef.snippet ? (
             <pre>{state.codeRef.snippet}</pre>
           ) : (

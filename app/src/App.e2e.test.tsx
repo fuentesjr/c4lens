@@ -50,6 +50,7 @@ const ipcMocks = vi.hoisted(() => {
       state.handlers = handlers;
       return state.unlisten;
     }),
+    openInEditor: vi.fn<(path: string, line?: number, column?: number) => Promise<void>>(async () => {}),
     openRepositoryFromDialog: vi.fn<
       () => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null } | null>
     >(async () => null),
@@ -62,6 +63,7 @@ vi.mock("./ipc/client", () => ({
   getElementCode: ipcMocks.getElementCode,
   isTauriDesktop: ipcMocks.isTauriDesktop,
   listenToModelEvents: ipcMocks.listenToModelEvents,
+  openInEditor: ipcMocks.openInEditor,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
   scanCodebase: ipcMocks.scanCodebase,
 }));
@@ -187,6 +189,8 @@ function resetDomAndRoute() {
   ipcMocks.getElementCode.mockResolvedValue(null);
   ipcMocks.isTauriDesktop.mockReset();
   ipcMocks.isTauriDesktop.mockReturnValue(false);
+  ipcMocks.openInEditor.mockReset();
+  ipcMocks.openInEditor.mockResolvedValue(undefined);
   ipcMocks.listenToModelEvents.mockClear();
   ipcMocks.openRepositoryFromDialog.mockReset();
   ipcMocks.openRepositoryFromDialog.mockResolvedValue(null);
@@ -532,6 +536,82 @@ describe("App source preview behavior", () => {
 
     expect(ipcMocks.getElementCode).toHaveBeenCalledTimes(2);
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("refreshed_source");
+
+    cleanup();
+  });
+
+  it("opens the selected source file in the editor", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementCode.mockResolvedValueOnce(
+      codeRefFor({
+        elementSlug: "acme_api",
+        path: "src/api/main.rs",
+        language: "rust",
+        snippet: "fn main() {\n    run_api();\n}\n",
+      }),
+    );
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const jumpAction = getDetailAction(container, "Jump to code");
+    expect(jumpAction).not.toBeNull();
+
+    await act(async () => {
+      jumpAction!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(ipcMocks.openInEditor).toHaveBeenCalledTimes(1);
+    expect(ipcMocks.openInEditor).toHaveBeenCalledWith("src/api/main.rs");
+
+    cleanup();
+  });
+
+  it("surfaces source open failures without clearing the preview", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementCode.mockResolvedValueOnce(
+      codeRefFor({
+        elementSlug: "acme_api",
+        path: "src/api/main.rs",
+        language: "rust",
+        snippet: "fn main() {}\n",
+      }),
+    );
+    ipcMocks.openInEditor.mockRejectedValueOnce({
+      code: "path.open_failed",
+      message: "Unable to open source file.",
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const jumpAction = getDetailAction(container, "Jump to code");
+    expect(jumpAction).not.toBeNull();
+
+    await act(async () => {
+      jumpAction!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Unable to open source file.");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("src/api/main.rs");
 
     cleanup();
   });

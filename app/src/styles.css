@@ -392,6 +392,10 @@ input {
 }
 
 .detail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   margin: 0 0 14px;
   height: 34px;
   width: 100%;
