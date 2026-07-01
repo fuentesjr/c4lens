@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ScanSummary, ValidationReport } from "./model/types";
+import type { CodeRef, EffectiveModel, ScanSummary, ValidationReport } from "./model/types";
 
 type MockFlowNode = {
   id: string;
@@ -44,6 +44,7 @@ const ipcMocks = vi.hoisted(() => {
   return {
     state,
     fetchActiveModel: vi.fn<() => Promise<EffectiveModel | null>>(async () => null),
+    getElementCode: vi.fn<(slug: string) => Promise<CodeRef | null>>(async () => null),
     isTauriDesktop: vi.fn(() => false),
     listenToModelEvents: vi.fn(async (handlers: NonNullable<typeof state.handlers>) => {
       state.handlers = handlers;
@@ -58,6 +59,7 @@ const ipcMocks = vi.hoisted(() => {
 
 vi.mock("./ipc/client", () => ({
   fetchActiveModel: ipcMocks.fetchActiveModel,
+  getElementCode: ipcMocks.getElementCode,
   isTauriDesktop: ipcMocks.isTauriDesktop,
   listenToModelEvents: ipcMocks.listenToModelEvents,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
@@ -181,6 +183,8 @@ function resetDomAndRoute() {
   window.location.hash = "";
   ipcMocks.fetchActiveModel.mockReset();
   ipcMocks.fetchActiveModel.mockResolvedValue(null);
+  ipcMocks.getElementCode.mockReset();
+  ipcMocks.getElementCode.mockResolvedValue(null);
   ipcMocks.isTauriDesktop.mockReset();
   ipcMocks.isTauriDesktop.mockReturnValue(false);
   ipcMocks.listenToModelEvents.mockClear();
@@ -385,6 +389,149 @@ describe("App drill-down renderer behavior", () => {
     expect(labels).toContain("Acme API");
     expect(labels).toContain("Payments");
     expect(labels).not.toContain("API Server");
+
+    cleanup();
+  });
+});
+
+describe("App source preview behavior", () => {
+  afterEach(() => {
+    resetDomAndRoute();
+  });
+
+  it("loads indexed source preview for the selected element", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementCode.mockResolvedValueOnce(
+      codeRefFor({
+        elementSlug: "acme_api",
+        path: "src/api/main.rs",
+        language: "rust",
+        snippet: "fn main() {\n    run_api();\n}\n",
+      }),
+    );
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.getElementCode).toHaveBeenCalledWith("acme_api");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Source");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("src/api/main.rs");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("rust");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("run_api");
+
+    cleanup();
+  });
+
+  it("shows a quiet not-indexed state when selected element source is unavailable", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementCode.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Source not indexed");
+
+    cleanup();
+  });
+
+  it("ignores stale source preview responses after selection changes", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    let resolveSource: (codeRef: CodeRef) => void = () => {};
+    ipcMocks.getElementCode.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSource = resolve;
+      }),
+    );
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    const actorNode = getCanvasNode(container, "Customer");
+    expect(systemNode).not.toBeNull();
+    expect(actorNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      actorNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      resolveSource(
+        codeRefFor({
+          elementSlug: "acme_api",
+          snippet: "fn stale_source() {}\n",
+        }),
+      );
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Customer");
+    expect(container.querySelector("aside.detail-panel")?.textContent).not.toContain("stale_source");
+
+    cleanup();
+  });
+
+  it("refreshes the selected source preview after a successful scan", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementCode.mockResolvedValueOnce(null);
+    ipcMocks.scanCodebase.mockResolvedValueOnce(
+      scanSummaryFor({
+        scanToken: "scan-token-after-source-index",
+      }),
+    );
+    ipcMocks.getElementCode.mockResolvedValueOnce(
+      codeRefFor({
+        elementSlug: "acme_api",
+        path: "src/api/main.rs",
+        snippet: "fn refreshed_source() {}\n",
+      }),
+    );
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Source not indexed");
+
+    const scanButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Scan",
+    );
+    expect(scanButton).not.toBeNull();
+
+    await act(async () => {
+      scanButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.getElementCode).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("refreshed_source");
 
     cleanup();
   });
@@ -917,6 +1064,17 @@ function scanSummaryFor(overrides: Partial<ScanSummary> = {}): ScanSummary {
     imports: 0,
     durationMs: 12,
     warnings: [],
+    ...overrides,
+  };
+}
+
+function codeRefFor(overrides: Partial<CodeRef> = {}): CodeRef {
+  return {
+    elementSlug: "acme_api",
+    path: "src/api/main.rs",
+    absolutePath: "/tmp/repo/src/api/main.rs",
+    language: "rust",
+    snippet: "fn main() {}\n",
     ...overrides,
   };
 }

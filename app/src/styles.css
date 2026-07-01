@@ -402,6 +402,44 @@ input {
   cursor: pointer;
 }
 
+.source-preview {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.source-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-preview-meta span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #eef1f4;
+  color: #44515f;
+  font-size: 12px;
+}
+
+.source-preview pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #d8dde4;
+  border-radius: 6px;
+  background: #17212b;
+  color: #edf2f7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .detail-panel h3 {
   margin: 0 0 10px;
   font-size: 13px;

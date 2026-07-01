@@ -22,6 +22,7 @@ fn main() {
             commands::repo::open_repo,
             commands::repo::get_model,
             commands::repo::scan_codebase,
+            commands::repo::get_element_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running c4lens tauri app");

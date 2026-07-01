@@ -103,6 +103,14 @@ export interface ScanSummary {
   warnings: ValidationIssue[];
 }
 
+export interface CodeRef {
+  elementSlug: Slug;
+  path: string;
+  absolutePath: string;
+  language?: string | null;
+  snippet?: string | null;
+}
+
 export interface EffectiveModel {
   repo: RepoHandle;
   sourceSha: string;

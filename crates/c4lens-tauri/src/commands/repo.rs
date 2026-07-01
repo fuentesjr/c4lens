@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use c4lens_core::{
+    default_index_path, get_element_code as core_get_element_code,
     load_effective_model_from_repo_recovering_generated_overlay, repo_handle_from_path, scan_repo,
-    CommandError, EffectiveModel, RepoHandle, ScanOptions, ScanSummary,
+    CodeRef, CommandError, EffectiveModel, RepoHandle, ScanOptions, ScanSummary,
 };
 use rfd::FileDialog;
 use serde::Deserialize;
@@ -18,6 +19,12 @@ use crate::model_watcher::spawn_model_watcher;
 pub struct ScanCodebaseParams {
     #[serde(default)]
     pub force: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetElementCodeParams {
+    pub slug: String,
 }
 
 #[command]
@@ -90,6 +97,15 @@ pub fn scan_codebase(
     Ok(summary)
 }
 
+#[command]
+pub fn get_element_code(
+    params: GetElementCodeParams,
+    state: State<AppState>,
+) -> Result<Option<CodeRef>, CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    get_element_code_for_repo(&repo, &params.slug, None)
+}
+
 fn active_repo_from_mutex(
     active_repo: &Mutex<Option<RepoHandle>>,
 ) -> Result<RepoHandle, CommandError> {
@@ -99,6 +115,18 @@ fn active_repo_from_mutex(
     guard
         .clone()
         .ok_or_else(|| CommandError::new("repo.not_open", "No repository is open."))
+}
+
+fn get_element_code_for_repo(
+    repo: &RepoHandle,
+    slug: &str,
+    index_path: Option<PathBuf>,
+) -> Result<Option<CodeRef>, CommandError> {
+    let index_path = index_path.unwrap_or_else(|| default_index_path(repo));
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+    core_get_element_code(repo, &index_path, slug)
 }
 
 fn scan_codebase_for_repo(
@@ -127,7 +155,7 @@ mod tests {
 
     use crate::app_state::AppState;
 
-    use super::{active_repo_from_mutex, scan_codebase_for_repo};
+    use super::{active_repo_from_mutex, get_element_code_for_repo, scan_codebase_for_repo};
 
     #[test]
     fn active_repo_returns_repo_not_open_when_no_repo_is_active() {
@@ -156,6 +184,68 @@ mod tests {
         assert_eq!(summary.deleted_files, 0);
 
         cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn get_element_code_for_repo_reads_scanned_code_ref() {
+        let root = fresh_test_dir("element-code-command-repo");
+        let index_root = fresh_test_dir("element-code-command-index");
+        let index_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Source Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_codebase_for_repo(repo.clone(), false, Some(index_path.clone())).expect("scan repo");
+
+        let code_ref = get_element_code_for_repo(&repo, "app", Some(index_path))
+            .expect("resolve code")
+            .expect("code ref");
+
+        assert_eq!(code_ref.element_slug, "app");
+        assert_eq!(code_ref.path, "src/main.rs");
+        assert_eq!(code_ref.language.as_deref(), Some("rust"));
+        assert_eq!(code_ref.snippet.as_deref(), Some("fn main() {}\n"));
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn get_element_code_for_repo_returns_none_when_index_has_not_been_created() {
+        let root = fresh_test_dir("element-code-missing-index-repo");
+        let index_root = fresh_test_dir("element-code-missing-index-root");
+        cleanup(index_root.clone());
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Source Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let code_ref =
+            get_element_code_for_repo(&repo, "app", Some(index_root.join("index.sqlite3")))
+                .expect("missing index should be a cache miss");
+
+        assert!(code_ref.is_none());
+
         cleanup(root);
     }
 

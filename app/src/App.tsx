@@ -24,10 +24,17 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { fetchActiveModel, isTauriDesktop, listenToModelEvents, openRepositoryFromDialog, scanCodebase } from "./ipc/client";
+import {
+  fetchActiveModel,
+  getElementCode,
+  isTauriDesktop,
+  listenToModelEvents,
+  openRepositoryFromDialog,
+  scanCodebase,
+} from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ElementNode, ScanSummary, ValidationIssue, ValidationReport } from "./model/types";
+import type { CodeRef, EffectiveModel, ElementNode, ScanSummary, ValidationIssue, ValidationReport } from "./model/types";
 import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
   availableContainers,
@@ -41,6 +48,19 @@ const nodeTypes = {
   c4Node: C4Node,
 };
 
+type SourcePreviewState =
+  | { status: "idle"; codeRef: null; message: null }
+  | { status: "loading"; repoId: string; elementSlug: string; codeRef: null; message: null }
+  | { status: "ready"; repoId: string; elementSlug: string; codeRef: CodeRef; message: null }
+  | { status: "missing"; repoId: string; elementSlug: string; codeRef: null; message: null }
+  | { status: "error"; repoId: string; elementSlug: string; codeRef: null; message: string };
+
+const idleSourcePreview: SourcePreviewState = {
+  status: "idle",
+  codeRef: null,
+  message: null,
+};
+
 export function App() {
   const initialRoute = useMemo(() => resolveHashRoute(currentHashRoute(), sampleModel), []);
   const [model, setModel] = useState<EffectiveModel>(sampleModel);
@@ -50,6 +70,8 @@ export function App() {
   const [routeIssue, setRouteIssue] = useState<RouteIssue | null>(initialRoute.issue);
   const [validationOverride, setValidationOverride] = useState<ValidationReport | null>(null);
   const [status, setStatus] = useState("Sample model ready");
+  const [sourcePreview, setSourcePreview] = useState<SourcePreviewState>(idleSourcePreview);
+  const [indexRevision, setIndexRevision] = useState<string | null>(null);
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
@@ -59,6 +81,10 @@ export function App() {
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
+  const visibleSourcePreview = useMemo(
+    () => sourcePreviewForSelection(sourcePreview, activeRepoId, selectedElement),
+    [activeRepoId, selectedElement, sourcePreview],
+  );
   const activeValidation = validationOverride ?? model.validation;
   const warningIssues = useMemo(
     () => activeValidation.issues.filter((issue) => issue.severity === "warning"),
@@ -191,6 +217,69 @@ export function App() {
   }, [selectedSlug, view.nodes]);
 
   useEffect(() => {
+    let cancelled = false;
+    setSourcePreview(idleSourcePreview);
+
+    if (!selectedElement?.code || !isTauriDesktop()) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const sourceRepoId = activeRepoIdRef.current;
+    const sourceSlug = selectedElement.slug;
+    setSourcePreview({
+      status: "loading",
+      repoId: sourceRepoId,
+      elementSlug: sourceSlug,
+      codeRef: null,
+      message: null,
+    });
+
+    getElementCode(sourceSlug)
+      .then((codeRef) => {
+        if (cancelled || activeRepoIdRef.current !== sourceRepoId) {
+          return;
+        }
+        if (codeRef && codeRef.elementSlug !== sourceSlug) {
+          return;
+        }
+        setSourcePreview(
+          codeRef
+            ? {
+                status: "ready",
+                repoId: sourceRepoId,
+                elementSlug: sourceSlug,
+                codeRef,
+                message: null,
+              }
+            : {
+                status: "missing",
+                repoId: sourceRepoId,
+                elementSlug: sourceSlug,
+                codeRef: null,
+                message: null,
+              },
+        );
+      })
+      .catch((error: unknown) => {
+        if (!cancelled && activeRepoIdRef.current === sourceRepoId) {
+          setSourcePreview({
+            status: "error",
+            repoId: sourceRepoId,
+            elementSlug: sourceSlug,
+            codeRef: null,
+            message: errorStatus(error, "Source unavailable"),
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepoId, indexRevision, model.sourceSha, selectedElement?.code, selectedElement?.slug]);
+
+  useEffect(() => {
     fetchActiveModel().then((activeModel) => {
       if (activeModel) {
         const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
@@ -200,6 +289,7 @@ export function App() {
         setSelectedSlug(nextRoute.selectedSlug);
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
+        setIndexRevision(null);
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
@@ -228,6 +318,7 @@ export function App() {
         setSelectedSlug(nextRoute.selectedSlug);
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
+        setIndexRevision(null);
         setStatus("Model updated");
       },
       onValidationFailed: (payload) => {
@@ -244,6 +335,7 @@ export function App() {
         }
 
         setStatus(`Index updated: ${scanSummaryStatus(payload.summary)}`);
+        setIndexRevision(payload.summary.scanToken);
       },
     }).then((cleanup) => {
       if (disposed) {
@@ -274,6 +366,7 @@ export function App() {
         return;
       }
       updateActiveRepoId(result.repo.id);
+      setIndexRevision(null);
       if (result.model) {
         const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
         setModel(result.model);
@@ -318,6 +411,7 @@ export function App() {
       const summary = await scanCodebase();
       if (activeRepoIdRef.current === scanRepoId && summary.repo.id === scanRepoId) {
         setStatus(`Scanned ${scanSummaryStatus(summary)}`);
+        setIndexRevision(summary.scanToken);
       }
     } catch (error) {
       if (activeRepoIdRef.current === scanRepoId) {
@@ -415,6 +509,7 @@ export function App() {
 
         <DetailPanel
           selectedElement={selectedElement}
+          sourcePreview={visibleSourcePreview}
           view={view}
           model={model}
           scope={scope}
@@ -447,8 +542,25 @@ function currentHashRoute(): string {
   return typeof window === "undefined" ? "" : window.location.hash;
 }
 
+function sourcePreviewForSelection(
+  state: SourcePreviewState,
+  activeRepoId: string,
+  selectedElement: ElementNode | null,
+): SourcePreviewState {
+  if (state.status === "idle" || !selectedElement) {
+    return idleSourcePreview;
+  }
+
+  if (state.repoId !== activeRepoId || state.elementSlug !== selectedElement.slug) {
+    return idleSourcePreview;
+  }
+
+  return state;
+}
+
 function DetailPanel({
   selectedElement,
+  sourcePreview,
   view,
   model,
   scope,
@@ -458,6 +570,7 @@ function DetailPanel({
   onDrillDown,
 }: {
   selectedElement: ElementNode | null;
+  sourcePreview: SourcePreviewState;
   view: DerivedView;
   model: EffectiveModel;
   scope: ViewScope;
@@ -502,6 +615,7 @@ function DetailPanel({
               </>
             ) : null}
           </dl>
+          <SourcePreview state={sourcePreview} />
           {drillTarget ? (
             <button className="detail-action" onClick={() => onDrillDown(drillTarget)}>
               {drillTarget.level === "component" ? "Open components" : "Open containers"}
@@ -561,6 +675,34 @@ function DetailPanel({
         </>
       )}
     </aside>
+  );
+}
+
+function SourcePreview({ state }: { state: SourcePreviewState }) {
+  if (state.status === "idle") {
+    return null;
+  }
+
+  return (
+    <section className="source-preview" aria-label="Source preview">
+      <h3>Source</h3>
+      {state.status === "loading" ? <p className="muted">Loading source</p> : null}
+      {state.status === "missing" ? <p className="muted">Source not indexed</p> : null}
+      {state.status === "error" ? <p className="muted">{state.message}</p> : null}
+      {state.status === "ready" ? (
+        <>
+          <div className="source-preview-meta">
+            <span>{state.codeRef.path}</span>
+            {state.codeRef.language ? <span>{state.codeRef.language}</span> : null}
+          </div>
+          {state.codeRef.snippet ? (
+            <pre>{state.codeRef.snippet}</pre>
+          ) : (
+            <p className="muted">No snippet available.</p>
+          )}
+        </>
+      ) : null}
+    </section>
   );
 }
 

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { EffectiveModel, RepoHandle, ScanSummary, ValidationReport } from "../model/types";
+import type { CodeRef, EffectiveModel, RepoHandle, ScanSummary, ValidationReport } from "../model/types";
 
 export interface OpenRepoResult {
   repo: RepoHandle;
@@ -77,6 +77,14 @@ export async function scanCodebase(params: { force?: boolean } = {}): Promise<Sc
   }
 
   return await invoke<ScanSummary>("scan_codebase", { params });
+}
+
+export async function getElementCode(slug: string): Promise<CodeRef | null> {
+  if (!isTauriDesktop()) {
+    return null;
+  }
+
+  return await invoke<CodeRef | null>("get_element_code", { params: { slug } });
 }
 
 export async function listenToModelEvents(handlers: ModelEventHandlers): Promise<UnlistenFn> {
