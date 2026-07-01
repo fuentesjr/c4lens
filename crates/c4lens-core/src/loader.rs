@@ -18,44 +18,24 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let authored_path = repo_root.join("c4/model.yml");
+    let model_file = select_model_file(&repo_root)?;
 
-    if !authored_path.exists() {
-        return Err(CommandError::new(
-            "model.not_found",
-            "No c4/model.yml exists in this repository.",
-        ));
-    }
-    let authored_path = authored_path.canonicalize().map_err(|error| {
-        CommandError::with_details(
-            "path.invalid",
-            "Unable to resolve c4/model.yml.",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    if !authored_path.starts_with(&repo_root) {
-        return Err(CommandError::new(
-            "path.invalid",
-            "c4/model.yml resolves outside the selected repository.",
-        ));
-    }
-
-    let contents = fs::read_to_string(&authored_path).map_err(|error| {
+    let contents = fs::read_to_string(&model_file.path).map_err(|error| {
         CommandError::with_details(
             "model.invalid",
-            "Failed to read c4/model.yml.",
+            format!("Failed to read {}.", model_file.relative_path),
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let value = parse_plain_yaml_value(&contents)?;
+    let value = parse_plain_yaml_value(&contents, model_file.relative_path)?;
     let mut model: Model = serde_yaml_ng::from_value(value).map_err(|error| {
         CommandError::with_details(
             "model.invalid",
-            "Failed to parse c4/model.yml.",
+            format!("Failed to parse {}.", model_file.relative_path),
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    normalize_model(&mut model, false);
+    normalize_model(&mut model, model_file.generated);
 
     let (indexed_relationships, mut issues) = deduplicate_relationships(&model.relationships);
     let relationships = indexed_relationships
@@ -63,7 +43,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
         .map(|indexed| indexed.relationship.clone())
         .collect::<Vec<_>>();
     model.relationships = relationships.clone();
-    let elements_by_slug = flatten_elements(&model)?;
+    let elements_by_slug = flatten_elements(&model, model_file.source_kind)?;
     validate_relationships(&indexed_relationships, &elements_by_slug)?;
     issues.extend(validate_external_system_containers(&model));
     issues.extend(validate_code_paths(&repo_root, &elements_by_slug)?);
@@ -72,8 +52,8 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     Ok(EffectiveModel {
         repo,
         source_sha: source_sha.clone(),
-        authored_path: Some("c4/model.yml".to_string()),
-        generated_path: None,
+        authored_path: model_file.authored_path.map(str::to_string),
+        generated_path: model_file.generated_path.map(str::to_string),
         model,
         elements_by_slug,
         relationships,
@@ -83,6 +63,82 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
             issues,
         },
     })
+}
+
+struct ModelFile {
+    path: PathBuf,
+    relative_path: &'static str,
+    generated: bool,
+    source_kind: SourceKind,
+    authored_path: Option<&'static str>,
+    generated_path: Option<&'static str>,
+}
+
+fn select_model_file(repo_root: &Path) -> Result<ModelFile, CommandError> {
+    let authored_relative_path = "c4/model.yml";
+    let authored_path = repo_root.join(authored_relative_path);
+    if control_file_is_present(&authored_path)? {
+        return Ok(ModelFile {
+            path: resolve_control_file(repo_root, &authored_path, authored_relative_path)?,
+            relative_path: authored_relative_path,
+            generated: false,
+            source_kind: SourceKind::Authored,
+            authored_path: Some(authored_relative_path),
+            generated_path: None,
+        });
+    }
+
+    let generated_relative_path = "c4/model.generated.yml";
+    let generated_path = repo_root.join(generated_relative_path);
+    if control_file_is_present(&generated_path)? {
+        return Ok(ModelFile {
+            path: resolve_control_file(repo_root, &generated_path, generated_relative_path)?,
+            relative_path: generated_relative_path,
+            generated: true,
+            source_kind: SourceKind::Generated,
+            authored_path: None,
+            generated_path: Some(generated_relative_path),
+        });
+    }
+
+    Err(CommandError::new(
+        "model.not_found",
+        "No c4/model.yml exists in this repository, and no c4/model.generated.yml exists.",
+    ))
+}
+
+fn control_file_is_present(path: &Path) -> Result<bool, CommandError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CommandError::with_details(
+            "path.invalid",
+            format!("Unable to inspect {}.", path.display()),
+            serde_json::json!({ "error": error.to_string() }),
+        )),
+    }
+}
+
+fn resolve_control_file(
+    repo_root: &Path,
+    path: &Path,
+    relative_path: &str,
+) -> Result<PathBuf, CommandError> {
+    let resolved_path = path.canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "path.invalid",
+            format!("Unable to resolve {relative_path}."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    if !resolved_path.starts_with(repo_root) {
+        return Err(CommandError::new(
+            "path.invalid",
+            format!("{relative_path} resolves outside the selected repository."),
+        ));
+    }
+
+    Ok(resolved_path)
 }
 
 fn normalize_model(model: &mut Model, generated: bool) {
@@ -111,7 +167,10 @@ fn normalize_model(model: &mut Model, generated: bool) {
     }
 }
 
-fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, CommandError> {
+fn flatten_elements(
+    model: &Model,
+    source_kind: SourceKind,
+) -> Result<BTreeMap<String, ElementNode>, CommandError> {
     let mut output = BTreeMap::new();
     let mut paths_by_slug = BTreeMap::new();
 
@@ -129,7 +188,7 @@ fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, Comm
                 container_slug: None,
                 external: None,
                 kind: None,
-                source: SourceKind::Authored,
+                source: source_kind.clone(),
             },
         )?;
     }
@@ -148,7 +207,7 @@ fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, Comm
                 container_slug: None,
                 external: Some(system.external),
                 kind: None,
-                source: SourceKind::Authored,
+                source: source_kind.clone(),
             },
         )?;
 
@@ -166,7 +225,7 @@ fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, Comm
                     container_slug: None,
                     external: Some(system.external),
                     kind: Some(container.kind.clone()),
-                    source: SourceKind::Authored,
+                    source: source_kind.clone(),
                 },
             )?;
 
@@ -186,7 +245,7 @@ fn flatten_elements(model: &Model) -> Result<BTreeMap<String, ElementNode>, Comm
                         container_slug: Some(container_slug.clone()),
                         external: Some(system.external),
                         kind: None,
-                        source: SourceKind::Authored,
+                        source: source_kind.clone(),
                     },
                 )?;
             }
@@ -501,7 +560,10 @@ fn stable_source_sha(contents: &str) -> String {
     format!("{:x}", Sha256::digest(contents.as_bytes()))
 }
 
-fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, CommandError> {
+fn parse_plain_yaml_value(
+    contents: &str,
+    relative_path: &str,
+) -> Result<serde_yaml_ng::Value, CommandError> {
     reject_anchor_and_alias_tokens(contents)?;
 
     let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(contents).map_err(|error| {
@@ -516,7 +578,7 @@ fn parse_plain_yaml_value(contents: &str) -> Result<serde_yaml_ng::Value, Comman
 
         CommandError::with_details(
             "parse.invalid_yaml",
-            "Failed to parse c4/model.yml.",
+            format!("Failed to parse {relative_path}."),
             serde_json::json!({ "error": message }),
         )
     })?;
@@ -1718,6 +1780,148 @@ relationships:
         assert_eq!(effective.relationships[0].from, "customer");
         assert_eq!(effective.relationships[0].to, "api");
         assert_ne!(effective.source_sha, "sample-phase0-v1");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn loads_generated_only_model_when_authored_model_is_missing() {
+        let root = fresh_test_dir("generated-only-model");
+        write_generated_model(
+            &root,
+            r#"
+name: Generated Only
+actors:
+  customer:
+    name: Customer
+systems:
+  generated_system:
+    name: Generated System
+    containers:
+      api:
+        name: API
+relationships:
+  - from: customer
+    to: api
+    description: Uses
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("generated model");
+
+        assert_eq!(effective.model.name, "Generated Only");
+        assert_eq!(effective.authored_path, None);
+        assert_eq!(
+            effective.generated_path.as_deref(),
+            Some("c4/model.generated.yml")
+        );
+        assert!(effective.model.generated);
+        assert!(effective.model.actors["customer"].base.generated);
+        assert!(effective.relationships[0].generated);
+        assert_eq!(
+            effective.elements_by_slug["api"].source,
+            crate::SourceKind::Generated
+        );
+        assert!(effective.validation.ok);
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn prefers_authored_model_when_authored_and_generated_models_exist() {
+        let root = fresh_test_dir("authored-and-generated-models");
+        write_model(&root, "name: Authored Model\n");
+        write_generated_model(&root, "name: Generated Model\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("authored model");
+
+        assert_eq!(effective.model.name, "Authored Model");
+        assert_eq!(effective.authored_path.as_deref(), Some("c4/model.yml"));
+        assert_eq!(effective.generated_path, None);
+        assert!(!effective.model.generated);
+
+        cleanup(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_authored_model_symlink_does_not_fall_back_to_generated_model() {
+        use std::os::unix::fs::symlink;
+
+        let root = fresh_test_dir("broken-authored-with-generated");
+        fs::create_dir(root.join("c4")).expect("create c4 dir");
+        symlink(
+            "/private/tmp/c4lens-missing-model.yml",
+            root.join("c4/model.yml"),
+        )
+        .expect("create broken authored symlink");
+        fs::write(
+            root.join("c4/model.generated.yml"),
+            "name: Generated Fallback\n",
+        )
+        .expect("write generated model");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("authored symlink should fail");
+
+        assert_eq!(error.code, "path.invalid");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn authored_model_directory_does_not_fall_back_to_generated_model() {
+        let root = fresh_test_dir("authored-directory-with-generated");
+        fs::create_dir_all(root.join("c4/model.yml")).expect("create authored model directory");
+        fs::write(
+            root.join("c4/model.generated.yml"),
+            "name: Generated Fallback\n",
+        )
+        .expect("write generated model");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error =
+            load_effective_model_from_repo(repo).expect_err("authored directory should fail");
+
+        assert_eq!(error.code, "model.invalid");
+
+        cleanup(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_generated_model_symlink_is_not_reported_as_missing_model() {
+        use std::os::unix::fs::symlink;
+
+        let root = fresh_test_dir("broken-generated-model");
+        fs::create_dir(root.join("c4")).expect("create c4 dir");
+        symlink(
+            "/private/tmp/c4lens-missing-generated.yml",
+            root.join("c4/model.generated.yml"),
+        )
+        .expect("create broken generated symlink");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error =
+            load_effective_model_from_repo(repo).expect_err("generated symlink should fail");
+
+        assert_eq!(error.code, "path.invalid");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn reports_generated_model_path_for_generated_only_invalid_yaml() {
+        let root = fresh_test_dir("generated-invalid-yaml");
+        write_generated_model(&root, "name: [unterminated\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo(repo).expect_err("generated yaml should fail");
+
+        assert_eq!(error.code, "parse.invalid_yaml");
+        assert_eq!(error.message, "Failed to parse c4/model.generated.yml.");
 
         cleanup(root);
     }
@@ -3030,6 +3234,11 @@ systems:
     fn write_model(root: &PathBuf, contents: &str) {
         fs::create_dir_all(root.join("c4")).expect("create c4 dir");
         fs::write(root.join("c4/model.yml"), contents).expect("write model");
+    }
+
+    fn write_generated_model(root: &PathBuf, contents: &str) {
+        fs::create_dir_all(root.join("c4")).expect("create c4 dir");
+        fs::write(root.join("c4/model.generated.yml"), contents).expect("write generated model");
     }
 
     fn fresh_test_dir(name: &str) -> PathBuf {
