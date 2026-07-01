@@ -13,6 +13,8 @@ use crate::{
 };
 
 const MIGRATION_VERSION: i64 = 1;
+const MAX_SCANNABLE_FILE_BYTES: i64 = 2 * 1024 * 1024;
+const SCAN_BINARY_PREFIX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions {
@@ -83,6 +85,26 @@ LIMIT 1
     if !absolute_path.is_file() {
         return Ok(None);
     }
+    let metadata = match fs::metadata(&absolute_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CommandError::with_details(
+                "scan.failed",
+                "Failed to inspect indexed source file.",
+                serde_json::json!({ "path": relative_path, "error": error.to_string() }),
+            ));
+        }
+    };
+    if metadata.len() > MAX_SCANNABLE_FILE_BYTES as u64 {
+        return Ok(Some(CodeRef {
+            element_slug: element_slug.to_string(),
+            path: relative_path.to_string(),
+            absolute_path: absolute_path.to_string_lossy().to_string(),
+            language,
+            snippet: None,
+        }));
+    }
 
     let bytes = match fs::read(&absolute_path) {
         Ok(bytes) => bytes,
@@ -95,7 +117,13 @@ LIMIT 1
             ));
         }
     };
-    let snippet = snippet_from_utf8_bytes(&bytes);
+    let snippet = if has_nul_in_prefix(&bytes, SCAN_BINARY_PREFIX_BYTES)
+        || std::str::from_utf8(&bytes).is_err()
+    {
+        None
+    } else {
+        snippet_from_utf8_bytes(&bytes)
+    };
 
     Ok(Some(CodeRef {
         element_slug: element_slug.to_string(),
@@ -261,7 +289,15 @@ fn scan_repo_with_connection(
             .map(|previous| previous.content_sha != scanned_file.content_sha)
             .unwrap_or(true);
 
-        if file_changed {
+        let stale_ineligible_analysis = if let Some(previous_file) = previous_file {
+            !scanned_file.should_extract_artifacts
+                && !file_changed
+                && file_has_analysis(&transaction, previous_file.id)?
+        } else {
+            false
+        };
+        let should_clear_analysis = file_changed || stale_ineligible_analysis;
+        if should_clear_analysis {
             changed_files += 1;
             if let Some(previous_file) = previous_file {
                 delete_file_analysis(&transaction, previous_file.id)?;
@@ -335,6 +371,10 @@ fn extract_file_artifacts(
     file_id: i64,
     file: &ScannedFile,
 ) -> Result<(usize, usize), CommandError> {
+    if !file.should_extract_artifacts {
+        return Ok((0, 0));
+    }
+
     let Some(lang) = file.lang.as_deref() else {
         return Ok((0, 0));
     };
@@ -705,6 +745,28 @@ fn delete_file_analysis(connection: &Connection, file_id: i64) -> Result<(), Com
     Ok(())
 }
 
+fn file_has_analysis(connection: &Connection, file_id: i64) -> Result<bool, CommandError> {
+    let symbol_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE file_id = ?1",
+            params![file_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
+    if symbol_count > 0 {
+        return Ok(true);
+    }
+
+    let import_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM imports WHERE file_id = ?1",
+            params![file_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
+    Ok(import_count > 0)
+}
+
 fn upsert_file(
     connection: &Connection,
     repo_id: &str,
@@ -873,6 +935,16 @@ fn collect_scan_files(
         let Some(relative_path) = relative_posix_path(repo_root, path) else {
             continue;
         };
+        let mut should_extract_artifacts = true;
+        if metadata.len() > MAX_SCANNABLE_FILE_BYTES as u64 {
+            should_extract_artifacts = false;
+            warnings.push(scan_warning(
+                "scan.file_too_large",
+                "Skipping symbol and import extraction for an oversized file.",
+                Some(relative_path.clone()),
+            ));
+        }
+
         let contents = fs::read(path).map_err(|error| {
             CommandError::with_details(
                 "scan.failed",
@@ -880,12 +952,30 @@ fn collect_scan_files(
                 serde_json::json!({ "path": relative_path, "error": error.to_string() }),
             )
         })?;
+        if should_extract_artifacts && has_nul_in_prefix(&contents, SCAN_BINARY_PREFIX_BYTES) {
+            should_extract_artifacts = false;
+            warnings.push(scan_warning(
+                "scan.binary_file_skipped",
+                "Skipping symbol and import extraction for a binary file.",
+                Some(relative_path.clone()),
+            ));
+        }
+        if should_extract_artifacts && std::str::from_utf8(&contents).is_err() {
+            should_extract_artifacts = false;
+            warnings.push(scan_warning(
+                "scan.invalid_utf8",
+                "Skipping symbol and import extraction for an invalid UTF-8 file.",
+                Some(relative_path.clone()),
+            ));
+        }
+
         files.push(ScannedFile {
             lang: language_for_path(&relative_path).map(str::to_string),
             path: relative_path,
             content_sha: sha256_hex(&contents),
             mtime_ms: metadata_mtime_ms(&metadata),
             size_bytes: metadata.len() as i64,
+            should_extract_artifacts,
         });
     }
 
@@ -1154,6 +1244,11 @@ struct ScannedFile {
     content_sha: String,
     mtime_ms: i64,
     size_bytes: i64,
+    should_extract_artifacts: bool,
+}
+
+fn has_nul_in_prefix(bytes: &[u8], max: usize) -> bool {
+    bytes.iter().take(max).any(|byte| *byte == b'\0')
 }
 
 #[cfg(test)]
@@ -1227,6 +1322,9 @@ systems:
   app:
     name: App
     code: src/main.rs
+  huge:
+    name: Huge
+    code: src/huge.rs
 "#,
         );
         write_file(&root, "src/main.rs", "use std::io;\nfn main() {}\n");
@@ -1460,6 +1558,250 @@ WHERE repo_id = ?1 AND path IN ('debug.log', 'node_modules/pkg/index.js')
             .expect("query indexed index files");
         assert_eq!(index_file_count, 0);
 
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_skips_oversized_file_from_symbol_and_import_extraction() {
+        let root = fresh_test_dir("scan-skip-oversized");
+        let index_root = fresh_test_dir("scan-skip-oversized-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+  huge:
+    name: Huge
+    code: src/huge.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "use std::io;\nfn main() {}\n");
+        let oversized = "a".repeat((super::MAX_SCANNABLE_FILE_BYTES + 1) as usize);
+        write_file(&root, "src/huge.rs", &oversized);
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert_eq!(summary.scanned_files, 3);
+        assert_eq!(summary.changed_files, 3);
+        assert_eq!(summary.symbols, 1);
+        assert_eq!(summary.imports, 1);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|issue| issue.code == "scan.file_too_large"));
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let huge_symbol_count: i64 = connection
+            .query_row(
+                r#"
+SELECT COUNT(*)
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1 AND files.path = 'src/huge.rs'
+"#,
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query huge file symbols");
+        assert_eq!(huge_symbol_count, 0);
+
+        let code = get_element_code(&repo, &db_path, "huge")
+            .expect("resolve huge code")
+            .expect("huge code ref");
+        assert_eq!(code.path, "src/huge.rs");
+        assert!(code.snippet.is_none());
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_binary_files_emit_warnings_and_skip_analysis() {
+        let root = fresh_test_dir("scan-skip-binary");
+        let index_root = fresh_test_dir("scan-skip-binary-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+  binary:
+    name: Binary
+    code: src/binary.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "use std::io;\nfn main() {}\n");
+        write_file_bytes(&root, "src/binary.rs", b"fn binary()\0{}\nuse std::io;\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert_eq!(summary.scanned_files, 3);
+        assert_eq!(summary.changed_files, 3);
+        assert_eq!(summary.symbols, 1);
+        assert_eq!(summary.imports, 1);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|issue| issue.code == "scan.binary_file_skipped"));
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let binary_symbol_count: i64 = connection
+            .query_row(
+                r#"
+SELECT COUNT(*)
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1 AND files.path = 'src/binary.rs'
+"#,
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query binary file symbols");
+        assert_eq!(binary_symbol_count, 0);
+
+        let binary_file_id: i64 = connection
+            .query_row(
+                "SELECT id FROM files WHERE repo_id = ?1 AND path = 'src/binary.rs'",
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query binary file id");
+        connection
+            .execute(
+                r#"
+INSERT INTO symbols(file_id, kind, name, qualified_name, start_line, start_column, end_line, end_column)
+VALUES (?1, 'function', 'stale_binary', NULL, 1, 0, 1, 12)
+"#,
+                params![binary_file_id],
+            )
+            .expect("seed stale binary symbol");
+        connection
+            .execute(
+                r#"
+INSERT INTO imports(file_id, target_module, target_path, kind)
+VALUES (?1, 'stale::binary', NULL, 'external')
+"#,
+                params![binary_file_id],
+            )
+            .expect("seed stale binary import");
+
+        let cleanup_rescan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan binary stale analysis");
+        assert_eq!(cleanup_rescan.changed_files, 1);
+        assert_eq!(cleanup_rescan.symbols, 1);
+        assert_eq!(cleanup_rescan.imports, 1);
+
+        let stable_rescan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan binary after cleanup");
+        assert_eq!(stable_rescan.changed_files, 0);
+        assert_eq!(stable_rescan.symbols, 1);
+        assert_eq!(stable_rescan.imports, 1);
+
+        let code = get_element_code(&repo, &db_path, "binary")
+            .expect("resolve binary code")
+            .expect("binary code ref");
+        assert_eq!(code.path, "src/binary.rs");
+        assert!(code.snippet.is_none());
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_invalid_utf8_files_emit_warnings_and_skip_analysis() {
+        let root = fresh_test_dir("scan-skip-invalid-utf8");
+        let index_root = fresh_test_dir("scan-skip-invalid-utf8-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "use std::io;\nfn main() {}\n");
+        write_file_bytes(
+            &root,
+            "src/invalid.rs",
+            &[0x66, 0x6e, 0x20, 0x62, 0xa, 0xff, 0x61, 0x64],
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert_eq!(summary.scanned_files, 3);
+        assert_eq!(summary.changed_files, 3);
+        assert_eq!(summary.symbols, 1);
+        assert_eq!(summary.imports, 1);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|issue| issue.code == "scan.invalid_utf8"));
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let invalid_symbol_count: i64 = connection
+            .query_row(
+                r#"
+SELECT COUNT(*)
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1 AND files.path = 'src/invalid.rs'
+"#,
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query invalid utf8 file symbols");
+        assert_eq!(invalid_symbol_count, 0);
+
+        cleanup(index_root);
         cleanup(root);
     }
 
@@ -1703,6 +2045,12 @@ systems:
         let path = root.join(relative_path);
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(path, contents).expect("write file");
+    }
+
+    fn write_file_bytes(root: &PathBuf, relative_path: &str, contents: &[u8]) {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, contents).expect("write file bytes");
     }
 
     fn cleanup(root: PathBuf) {

@@ -83,6 +83,34 @@ fn scan_json_reports_zero_changed_files_on_unchanged_rescan() {
     cleanup(index_dir);
 }
 
+#[test]
+fn scan_json_reports_scanner_limit_warnings() {
+    let repo = fresh_test_dir("scan-json-limit-warnings");
+    write_model(&repo, "name: Scan Repo\n");
+    write_file_bytes(&repo, "src/binary.rs", b"fn binary()\0{}\n");
+    let index_dir = fresh_test_dir("scan-json-limit-warnings-index");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["scan", "--json", "--repo"])
+        .arg(&repo)
+        .env("C4LENS_INDEX_DIR", &index_dir)
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let summary: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    let warnings = summary["warnings"].as_array().expect("warnings");
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["severity"], "warning");
+    assert_eq!(warnings[0]["stage"], "scan");
+    assert_eq!(warnings[0]["code"], "scan.binary_file_skipped");
+    assert_eq!(warnings[0]["path"], "src/binary.rs");
+
+    cleanup(repo);
+    cleanup(index_dir);
+}
+
 fn fresh_test_dir(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -101,6 +129,12 @@ fn write_file(repo: &PathBuf, relative_path: &str, contents: &str) {
     let path = repo.join(relative_path);
     fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
     fs::write(path, contents).expect("write file");
+}
+
+fn write_file_bytes(repo: &PathBuf, relative_path: &str, contents: &[u8]) {
+    let path = repo.join(relative_path);
+    fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+    fs::write(path, contents).expect("write bytes");
 }
 
 fn cleanup(root: PathBuf) {
