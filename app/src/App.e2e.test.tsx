@@ -3,6 +3,8 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { sampleModel } from "./model/sample";
+import type { EffectiveModel, ValidationReport } from "./model/types";
 
 type MockFlowNode = {
   id: string;
@@ -28,6 +30,36 @@ type MockDerivedEdge = {
   source: string;
   target: string;
 };
+
+const ipcMocks = vi.hoisted(() => {
+  const state = {
+    handlers: null as null | {
+      onModelChanged: (payload: { repoId: string; sourceSha: string }) => void | Promise<void>;
+      onValidationFailed: (payload: { repoId: string; validation: unknown }) => void | Promise<void>;
+    },
+    unlisten: vi.fn(),
+  };
+
+  return {
+    state,
+    fetchActiveModel: vi.fn<() => Promise<EffectiveModel | null>>(async () => null),
+    isTauriDesktop: vi.fn(() => false),
+    listenToModelEvents: vi.fn(async (handlers: NonNullable<typeof state.handlers>) => {
+      state.handlers = handlers;
+      return state.unlisten;
+    }),
+    openRepositoryFromDialog: vi.fn<
+      () => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null } | null>
+    >(async () => null),
+  };
+});
+
+vi.mock("./ipc/client", () => ({
+  fetchActiveModel: ipcMocks.fetchActiveModel,
+  isTauriDesktop: ipcMocks.isTauriDesktop,
+  listenToModelEvents: ipcMocks.listenToModelEvents,
+  openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
+}));
 
 vi.mock("./model/sample", async () => {
   const actual = await vi.importActual<typeof import("./model/sample")>("./model/sample");
@@ -144,6 +176,15 @@ function mountApp(): { container: HTMLElement; cleanup: () => void } {
 function resetDomAndRoute() {
   document.body.innerHTML = "";
   window.location.hash = "";
+  ipcMocks.fetchActiveModel.mockReset();
+  ipcMocks.fetchActiveModel.mockResolvedValue(null);
+  ipcMocks.isTauriDesktop.mockReset();
+  ipcMocks.isTauriDesktop.mockReturnValue(false);
+  ipcMocks.listenToModelEvents.mockClear();
+  ipcMocks.openRepositoryFromDialog.mockReset();
+  ipcMocks.openRepositoryFromDialog.mockResolvedValue(null);
+  ipcMocks.state.handlers = null;
+  ipcMocks.state.unlisten.mockClear();
 }
 
 async function flushLayout() {
@@ -437,3 +478,148 @@ describe("App validation warning surface", () => {
     cleanup();
   });
 });
+
+describe("App model event behavior", () => {
+  afterEach(() => {
+    resetDomAndRoute();
+  });
+
+  it("refetches and renders the model after a valid model-changed event", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const changedModel = effectiveModelWithName("Changed Architecture");
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(changedModel);
+
+    expect(ipcMocks.state.handlers).not.toBeNull();
+    await act(async () => {
+      await ipcMocks.state.handlers!.onModelChanged({
+        repoId: changedModel.repo.id,
+        sourceSha: changedModel.sourceSha,
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Changed Architecture");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Valid model");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Model updated");
+
+    cleanup();
+  });
+
+  it("keeps the last valid canvas and surfaces validation errors after validation-failed", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+    const labelsBeforeFailure = getCanvasLabels(container);
+    const validation = validationFailureReport("parse.invalid_yaml", "Failed to parse c4/model.yml.");
+
+    expect(ipcMocks.state.handlers).not.toBeNull();
+    await act(async () => {
+      await ipcMocks.state.handlers!.onValidationFailed({
+        repoId: sampleModel.repo.id,
+        validation,
+      });
+    });
+    await flushLayout();
+
+    expect(getCanvasLabels(container)).toEqual(labelsBeforeFailure);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Validation issues");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Model validation failed");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("parse.invalid_yaml");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Failed to parse c4/model.yml.");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("c4/model.yml");
+
+    cleanup();
+  });
+
+  it("accepts later model-changed events after opening a repo with an invalid model", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    const invalidRepo = {
+      id: "invalid-repo",
+      rootPath: "/tmp/invalid-repo",
+      name: "Invalid Repo",
+    };
+    ipcMocks.openRepositoryFromDialog.mockResolvedValueOnce({
+      repo: invalidRepo,
+      model: null,
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+    const labelsBeforeOpen = getCanvasLabels(container);
+
+    const openButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Open Folder",
+    );
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      openButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(getCanvasLabels(container)).toEqual(labelsBeforeOpen);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Watching Invalid Repo");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("model.load_failed");
+
+    const recoveredModel = effectiveModelWithName("Recovered Architecture", invalidRepo.id);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(recoveredModel);
+
+    expect(ipcMocks.state.handlers).not.toBeNull();
+    await act(async () => {
+      await ipcMocks.state.handlers!.onModelChanged({
+        repoId: invalidRepo.id,
+        sourceSha: recoveredModel.sourceSha,
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Recovered Architecture");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Model updated");
+
+    cleanup();
+  });
+});
+
+function effectiveModelWithName(name: string, repoId = sampleModel.repo.id): EffectiveModel {
+  return {
+    ...sampleModel,
+    repo: {
+      ...sampleModel.repo,
+      id: repoId,
+      name: "Watched Repo",
+    },
+    sourceSha: "changed-source-sha",
+    model: {
+      ...sampleModel.model,
+      name,
+    },
+    validation: {
+      ok: true,
+      sourceSha: "changed-source-sha",
+      issues: [],
+    },
+  };
+}
+
+function validationFailureReport(code: string, message: string): ValidationReport {
+  return {
+    ok: false,
+    issues: [
+      {
+        severity: "error",
+        stage: "parse",
+        code,
+        message,
+        path: "c4/model.yml",
+      },
+    ],
+  };
+}

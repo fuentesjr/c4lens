@@ -8,7 +8,8 @@ use rfd::FileDialog;
 use tauri::{command, Emitter, State, Window};
 
 use crate::app_state::AppState;
-use crate::events::MODEL_CHANGED;
+use crate::events::{ModelChangedPayload, MODEL_CHANGED};
+use crate::model_watcher::spawn_model_watcher;
 
 #[command]
 pub fn open_repo(
@@ -33,12 +34,20 @@ pub fn open_repo(
     if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
         let _ = window.emit(
             MODEL_CHANGED,
-            serde_json::json!({
-                "repoId": model.repo.id,
-                "sourceSha": model.source_sha,
-                "validation": model.validation,
-            }),
+            ModelChangedPayload {
+                repo_id: model.repo.id,
+                source_sha: model.source_sha,
+                validation: model.validation,
+            },
         );
+    }
+
+    {
+        let mut guard = state
+            .model_watcher
+            .lock()
+            .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
+        *guard = Some(spawn_model_watcher(repo.clone(), window));
     }
 
     Ok(repo)

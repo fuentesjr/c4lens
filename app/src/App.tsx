@@ -24,10 +24,10 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { openRepositoryFromDialog, fetchActiveModel, isTauriDesktop } from "./ipc/client";
+import { fetchActiveModel, isTauriDesktop, listenToModelEvents, openRepositoryFromDialog } from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ElementNode, ValidationIssue } from "./model/types";
+import type { EffectiveModel, ElementNode, ValidationIssue, ValidationReport } from "./model/types";
 import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
   availableContainers,
@@ -44,9 +44,11 @@ const nodeTypes = {
 export function App() {
   const initialRoute = useMemo(() => resolveHashRoute(currentHashRoute(), sampleModel), []);
   const [model, setModel] = useState<EffectiveModel>(sampleModel);
+  const [activeRepoId, setActiveRepoId] = useState(sampleModel.repo.id);
   const [scope, setScope] = useState<ViewScope>(initialRoute.scope);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(initialRoute.selectedSlug);
   const [routeIssue, setRouteIssue] = useState<RouteIssue | null>(initialRoute.issue);
+  const [validationOverride, setValidationOverride] = useState<ValidationReport | null>(null);
   const [status, setStatus] = useState("Sample model ready");
   const [isOpening, setIsOpening] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
@@ -55,9 +57,14 @@ export function App() {
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
+  const activeValidation = validationOverride ?? model.validation;
   const warningIssues = useMemo(
-    () => model.validation.issues.filter((issue) => issue.severity === "warning"),
-    [model.validation.issues],
+    () => activeValidation.issues.filter((issue) => issue.severity === "warning"),
+    [activeValidation.issues],
+  );
+  const errorIssues = useMemo(
+    () => activeValidation.issues.filter((issue) => issue.severity === "error"),
+    [activeValidation.issues],
   );
   const systems = useMemo(() => availableSystems(model), [model]);
   const activeSystemSlug = scope.level === "context" ? systems[0]?.slug : currentSystemSlug(model, scope);
@@ -177,13 +184,61 @@ export function App() {
       if (activeModel) {
         const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
         setModel(activeModel);
+        setActiveRepoId(activeModel.repo.id);
         setScope(nextRoute.scope);
         setSelectedSlug(nextRoute.selectedSlug);
         setRouteIssue(nextRoute.issue);
+        setValidationOverride(null);
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    listenToModelEvents({
+      onModelChanged: async (payload) => {
+        if (payload.repoId !== activeRepoId) {
+          return;
+        }
+
+        const activeModel = await fetchActiveModel();
+        if (!activeModel || disposed) {
+          return;
+        }
+
+        const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
+        setModel(activeModel);
+        setActiveRepoId(activeModel.repo.id);
+        setScope(nextRoute.scope);
+        setSelectedSlug(nextRoute.selectedSlug);
+        setRouteIssue(nextRoute.issue);
+        setValidationOverride(null);
+        setStatus("Model updated");
+      },
+      onValidationFailed: (payload) => {
+        if (payload.repoId !== activeRepoId) {
+          return;
+        }
+
+        setValidationOverride(payload.validation);
+        setStatus("Model validation failed");
+      },
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [activeRepoId]);
 
   const openRepo = useCallback(async () => {
     if (!isTauriDesktop()) {
@@ -199,12 +254,31 @@ export function App() {
         setStatus("Open canceled");
         return;
       }
-      const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
-      setModel(result.model);
-      setScope(nextRoute.scope);
-      setSelectedSlug(nextRoute.selectedSlug);
-      setRouteIssue(nextRoute.issue);
-      setStatus(`Opened ${result.repo.name}`);
+      setActiveRepoId(result.repo.id);
+      if (result.model) {
+        const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
+        setModel(result.model);
+        setScope(nextRoute.scope);
+        setSelectedSlug(nextRoute.selectedSlug);
+        setRouteIssue(nextRoute.issue);
+        setValidationOverride(null);
+        setStatus(`Opened ${result.repo.name}`);
+      } else {
+        setValidationOverride({
+          ok: false,
+          issues: [
+            {
+              severity: "error",
+              stage: "parse",
+              code: "model.load_failed",
+              message: `Unable to load ${result.repo.name}. Waiting for a valid model file.`,
+            },
+          ],
+        });
+        setSelectedSlug(null);
+        setRouteIssue(null);
+        setStatus(`Watching ${result.repo.name}`);
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to open repository");
     } finally {
@@ -302,19 +376,21 @@ export function App() {
           view={view}
           model={model}
           scope={scope}
+          validationReport={activeValidation}
           warningIssues={warningIssues}
+          errorIssues={errorIssues}
           onDrillDown={navigateTo}
         />
       </main>
 
       <footer className="statusbar">
-        <span className={model.validation.ok && warningIssues.length === 0 ? "status-ok" : "status-warning"}>
-          {model.validation.ok && warningIssues.length === 0 ? (
+        <span className={activeValidation.ok && warningIssues.length === 0 ? "status-ok" : "status-warning"}>
+          {activeValidation.ok && warningIssues.length === 0 ? (
             <CheckCircle2 size={15} />
           ) : (
             <AlertTriangle size={15} />
           )}
-          {validationStatusText(model, warningIssues)}
+          {validationStatusText(activeValidation, warningIssues)}
         </span>
         <span>{status}</span>
         <span>{layoutStatus}</span>
@@ -334,14 +410,18 @@ function DetailPanel({
   view,
   model,
   scope,
+  validationReport,
   warningIssues,
+  errorIssues,
   onDrillDown,
 }: {
   selectedElement: ElementNode | null;
   view: DerivedView;
   model: EffectiveModel;
   scope: ViewScope;
+  validationReport: ValidationReport;
   warningIssues: ValidationIssue[];
+  errorIssues: ValidationIssue[];
   onDrillDown: (scope: ViewScope) => void;
 }) {
   const relatedEdges = selectedElement
@@ -414,18 +494,24 @@ function DetailPanel({
             <dt>Repository</dt>
             <dd>{model.repo.name}</dd>
             <dt>Validation</dt>
-            <dd>{validationStatusText(model, warningIssues)}</dd>
+            <dd>{validationStatusText(validationReport, warningIssues)}</dd>
           </dl>
-          {model.validation.ok && warningIssues.length > 0 ? (
+          {!validationReport.ok && errorIssues.length > 0 ? (
+            <>
+              <h3>Validation</h3>
+              <div className="validation-list">
+                {errorIssues.map((issue, index) => (
+                  <ValidationIssueCard issue={issue} key={`${issue.code}-${issue.path ?? "model"}-${index}`} />
+                ))}
+              </div>
+            </>
+          ) : null}
+          {validationReport.ok && warningIssues.length > 0 ? (
             <>
               <h3>Warnings</h3>
               <div className="validation-list">
                 {warningIssues.map((issue, index) => (
-                  <div className="validation-item" key={`${issue.code}-${issue.path ?? "model"}-${index}`}>
-                    <strong>{issue.code}</strong>
-                    <span>{issue.message}</span>
-                    {issue.path ? <span>{issue.path}</span> : null}
-                  </div>
+                  <ValidationIssueCard issue={issue} key={`${issue.code}-${issue.path ?? "model"}-${index}`} />
                 ))}
               </div>
             </>
@@ -433,6 +519,16 @@ function DetailPanel({
         </>
       )}
     </aside>
+  );
+}
+
+function ValidationIssueCard({ issue }: { issue: ValidationIssue }) {
+  return (
+    <div className="validation-item">
+      <strong>{issue.code}</strong>
+      <span>{issue.message}</span>
+      {issue.path ? <span>{issue.path}</span> : null}
+    </div>
   );
 }
 
@@ -449,8 +545,8 @@ function RouteIssueNotice({ issue }: { issue: RouteIssue }) {
   );
 }
 
-function validationStatusText(model: EffectiveModel, warningIssues: ValidationIssue[]): string {
-  if (!model.validation.ok) {
+function validationStatusText(validation: ValidationReport, warningIssues: ValidationIssue[]): string {
+  if (!validation.ok) {
     return "Validation issues";
   }
 
