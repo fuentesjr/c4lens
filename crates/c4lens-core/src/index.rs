@@ -271,6 +271,10 @@ fn scan_repo_with_connection(
         upsert_file(&transaction, &repo.id, scanned_file)?;
         let file_id = file_id_for_path(&transaction, &repo.id, &scanned_file.path)?;
         file_ids_by_path.insert(scanned_file.path.clone(), file_id);
+
+        if file_changed {
+            let _ = extract_file_artifacts(&transaction, &repo_root, file_id, scanned_file)?;
+        }
     }
 
     let mut deleted_files = 0;
@@ -307,6 +311,9 @@ WHERE id = ?2
             .map_err(sqlite_error)?;
     }
 
+    let symbols = count_repo_symbols_for_repo(&transaction, &repo.id)? as usize;
+    let imports = count_repo_imports_for_repo(&transaction, &repo.id)? as usize;
+
     transaction.commit().map_err(sqlite_error)?;
 
     Ok(ScanSummary {
@@ -315,11 +322,308 @@ WHERE id = ?2
         scanned_files: scanned_files.len(),
         changed_files,
         deleted_files,
-        symbols: 0,
-        imports: 0,
+        symbols,
+        imports,
         duration_ms: started.elapsed().as_millis(),
         warnings,
     })
+}
+
+fn extract_file_artifacts(
+    connection: &Connection,
+    repo_root: &Path,
+    file_id: i64,
+    file: &ScannedFile,
+) -> Result<(usize, usize), CommandError> {
+    let Some(lang) = file.lang.as_deref() else {
+        return Ok((0, 0));
+    };
+
+    let absolute_path = repo_root.join(&file.path);
+    let bytes = fs::read(&absolute_path).map_err(|error| {
+        CommandError::with_details(
+            "scan.failed",
+            "Failed to re-read scanned file for symbol/import extraction.",
+            serde_json::json!({ "path": file.path, "error": error.to_string() }),
+        )
+    })?;
+
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Ok((0, 0));
+    };
+    let mut symbols = Vec::new();
+    let mut imports = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let line_no = (line_index + 1) as i32;
+        let clean_line = strip_inline_comment(lang, line);
+        if clean_line.trim().is_empty() {
+            continue;
+        }
+        match lang {
+            "rust" => {
+                extract_rust_symbols(&mut symbols, line_no, clean_line);
+                extract_rust_imports(&mut imports, line_no, clean_line);
+            }
+            _ => {}
+        }
+    }
+
+    let mut inserted_symbols = 0usize;
+    for symbol in &symbols {
+        connection
+            .execute(
+                r#"
+INSERT INTO symbols(file_id, kind, name, qualified_name, start_line, start_column, end_line, end_column)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+"#,
+                params![
+                    file_id,
+                    symbol.kind,
+                    symbol.name,
+                    symbol.qualified_name.as_deref(),
+                    symbol.start_line,
+                    symbol.start_column,
+                    symbol.end_line,
+                    symbol.end_column,
+                ],
+            )
+            .map_err(sqlite_error)?;
+        inserted_symbols += 1;
+    }
+
+    for import in &imports {
+        connection
+            .execute(
+                r#"
+INSERT INTO imports(file_id, target_module, target_path, kind)
+VALUES (?1, ?2, ?3, ?4)
+"#,
+                params![
+                    file_id,
+                    import.target_module,
+                    import.target_path.as_deref(),
+                    import.kind,
+                ],
+            )
+            .map_err(sqlite_error)?;
+    }
+
+    Ok((inserted_symbols, imports.len()))
+}
+
+fn strip_inline_comment<'a>(lang: &str, line: &'a str) -> &'a str {
+    let comment_markers: &[&str] = match lang {
+        "rust" => &["//"],
+        _ => &[],
+    };
+    for marker in comment_markers {
+        if let Some(index) = line.find(marker) {
+            return &line[..index];
+        }
+    }
+    line
+}
+
+#[derive(Clone, Debug)]
+struct ParsedSymbol {
+    kind: &'static str,
+    name: String,
+    qualified_name: Option<String>,
+    start_line: i32,
+    start_column: i32,
+    end_line: i32,
+    end_column: i32,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedImport {
+    target_module: String,
+    target_path: Option<String>,
+    kind: &'static str,
+}
+
+fn extract_rust_symbols(symbols: &mut Vec<ParsedSymbol>, line_no: i32, line: &str) {
+    let clean = line.trim_start();
+    let tokens: Vec<&str> = clean.split_whitespace().collect();
+    if let Some((name, kind, column)) =
+        extract_named_construct(&tokens, line, ["fn", "struct", "enum", "trait"])
+    {
+        symbols.push(ParsedSymbol {
+            kind,
+            name: name.to_string(),
+            qualified_name: None,
+            start_line: line_no,
+            start_column: column as i32,
+            end_line: line_no,
+            end_column: (column + name.len()) as i32,
+        });
+    }
+}
+
+fn extract_named_construct<'a>(
+    tokens: &[&'a str],
+    line: &'a str,
+    keywords: impl IntoIterator<Item = &'a str>,
+) -> Option<(&'a str, &'static str, usize)> {
+    let mut keyword_index = None;
+    let mut keyword = "";
+    for k in keywords {
+        if let Some(position) = tokens.iter().position(|token| *token == k) {
+            keyword_index = Some(position);
+            keyword = k;
+            break;
+        }
+    }
+
+    let Some(position) = keyword_index else {
+        return None;
+    };
+    let candidate = tokens.get(position + 1)?;
+    let name = candidate
+        .split(['(', '<', '{', ':', '=', ';'])
+        .next()
+        .unwrap_or(candidate);
+    if !is_rust_identifier(name) || is_rust_reserved_word(name) {
+        return None;
+    }
+
+    let kind = match keyword {
+        "fn" => "function",
+        "def" => "function",
+        "class" => "class",
+        "module" => "module",
+        "struct" => "struct",
+        "enum" => "enum",
+        "trait" => "interface",
+        _ => "symbol",
+    };
+
+    let before = line.find(candidate).unwrap_or(0);
+    Some((name, kind, before))
+}
+
+fn extract_rust_imports(imports: &mut Vec<ParsedImport>, _line_no: i32, line: &str) {
+    let clean = line.trim_start();
+    if !clean.starts_with("use ") {
+        return;
+    }
+
+    let target = clean
+        .trim_start_matches("use ")
+        .trim()
+        .trim_end_matches(';');
+    if target.is_empty() || target.starts_with('{') || target.starts_with('*') {
+        return;
+    }
+
+    let normalized = target.trim_end_matches("::*").to_string();
+    if normalized.is_empty() {
+        return;
+    }
+    let kind = if normalized.starts_with("crate::") || normalized.starts_with("self::") {
+        "internal"
+    } else if normalized.starts_with("super::") {
+        "internal"
+    } else {
+        "external"
+    };
+    imports.push(ParsedImport {
+        target_module: normalized.clone(),
+        target_path: None,
+        kind,
+    });
+}
+
+fn is_rust_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_rust_reserved_word(text: &str) -> bool {
+    matches!(
+        text,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "try"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+    )
+}
+
+fn count_repo_symbols_for_repo(
+    connection: &Connection,
+    repo_id: &str,
+) -> Result<i64, CommandError> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?1)",
+            params![repo_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
+}
+
+fn count_repo_imports_for_repo(
+    connection: &Connection,
+    repo_id: &str,
+) -> Result<i64, CommandError> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM imports WHERE file_id IN (SELECT id FROM files WHERE repo_id = ?1)",
+            params![repo_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
 }
 
 fn upsert_repo(connection: &Connection, repo: &RepoHandle) -> Result<(), CommandError> {
@@ -925,8 +1229,12 @@ systems:
     code: src/main.rs
 "#,
         );
-        write_file(&root, "src/main.rs", "fn main() {}\n");
-        write_file(&root, "src/lib.rs", "pub fn run() {}\n");
+        write_file(&root, "src/main.rs", "use std::io;\nfn main() {}\n");
+        write_file(
+            &root,
+            "src/lib.rs",
+            "pub fn run<T>() {}\npub struct Cache<K, V>;\nimpl Trait for Foo {}\n",
+        );
 
         let repo = repo_handle_from_path(&root).expect("repo handle");
         let summary = scan_repo(
@@ -941,8 +1249,8 @@ systems:
         assert_eq!(summary.scanned_files, 3);
         assert_eq!(summary.changed_files, 3);
         assert_eq!(summary.deleted_files, 0);
-        assert_eq!(summary.symbols, 0);
-        assert_eq!(summary.imports, 0);
+        assert_eq!(summary.symbols, 3);
+        assert_eq!(summary.imports, 1);
         assert!(summary.scan_token.len() >= 32);
 
         let connection = Connection::open(&db_path).expect("open db");
@@ -964,8 +1272,42 @@ systems:
             .expect("query source");
         assert_eq!(source_key, "path:src/main.rs");
 
+        let mut symbol_statement = connection
+            .prepare(
+                r#"
+SELECT symbols.kind || ':' || symbols.name
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+ORDER BY lower(symbols.name)
+"#,
+            )
+            .expect("prepare symbol query");
+        let symbol_rows = symbol_statement
+            .query_map(params![repo.id], |row| row.get::<_, String>(0))
+            .expect("query symbols");
+        let symbols = symbol_rows
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect symbols");
+        assert_eq!(symbols, ["struct:Cache", "function:main", "function:run"]);
+        drop(symbol_statement);
+
+        let import_target: String = connection
+            .query_row(
+                r#"
+SELECT imports.target_module
+FROM imports
+JOIN files ON files.id = imports.file_id
+WHERE files.repo_id = ?1
+"#,
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query import");
+        assert_eq!(import_target, "std::io");
+
         let rescan = scan_repo(
-            repo,
+            repo.clone(),
             ScanOptions {
                 force: false,
                 index_path: Some(db_path.clone()),
@@ -975,6 +1317,40 @@ systems:
         assert_eq!(rescan.scanned_files, 3);
         assert_eq!(rescan.changed_files, 0);
         assert_eq!(rescan.deleted_files, 0);
+
+        write_file(&root, "src/lib.rs", "pub struct Runner;\n");
+        let changed_rescan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan after source change");
+        assert_eq!(changed_rescan.scanned_files, 3);
+        assert_eq!(changed_rescan.changed_files, 1);
+        assert_eq!(changed_rescan.deleted_files, 0);
+        assert_eq!(changed_rescan.symbols, 2);
+
+        let mut symbol_statement = connection
+            .prepare(
+                r#"
+SELECT symbols.kind || ':' || symbols.name
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+ORDER BY lower(symbols.name)
+"#,
+            )
+            .expect("prepare changed symbol query");
+        let symbol_rows = symbol_statement
+            .query_map(params![repo.id], |row| row.get::<_, String>(0))
+            .expect("query changed symbols");
+        let symbols = symbol_rows
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect changed symbols");
+        assert_eq!(symbols, ["function:main", "struct:Runner"]);
+        drop(symbol_statement);
 
         fs::remove_file(root.join("src/lib.rs")).expect("remove file");
         let repo = repo_handle_from_path(&root).expect("repo handle");

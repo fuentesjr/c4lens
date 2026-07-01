@@ -18,7 +18,7 @@ systems:
     code: src/main.rs
 "#,
     );
-    write_file(&repo, "src/main.rs", "fn main() {}\n");
+    write_file(&repo, "src/main.rs", "use std::io;\nfn main() {}\n");
     write_file(&repo, "src/lib.rs", "pub fn run() {}\n");
     let index_dir = fresh_test_dir("scan-json-files-index");
 
@@ -41,8 +41,8 @@ systems:
     assert_eq!(summary["scannedFiles"], 3);
     assert_eq!(summary["changedFiles"], 3);
     assert_eq!(summary["deletedFiles"], 0);
-    assert_eq!(summary["symbols"], 0);
-    assert_eq!(summary["imports"], 0);
+    assert_eq!(summary["symbols"], 2);
+    assert_eq!(summary["imports"], 1);
     assert!(summary["scanToken"].as_str().expect("scan token").len() >= 32);
     assert_eq!(summary["warnings"].as_array().expect("warnings").len(), 0);
 
