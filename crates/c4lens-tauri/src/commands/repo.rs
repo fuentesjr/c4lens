@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use c4lens_core::{
-    load_effective_model_from_repo, repo_handle_from_path, CommandError, EffectiveModel, RepoHandle,
+    load_effective_model_from_repo_recovering_generated_overlay, repo_handle_from_path,
+    CommandError, EffectiveModel, RepoHandle,
 };
 use rfd::FileDialog;
 use tauri::{command, Emitter, State, Window};
@@ -29,7 +30,7 @@ pub fn open_repo(
         *guard = Some(repo.clone());
     }
 
-    if let Ok(model) = load_effective_model_from_repo(repo.clone()) {
+    if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
         let _ = window.emit(
             MODEL_CHANGED,
             serde_json::json!({
@@ -55,7 +56,7 @@ pub fn get_model(state: State<AppState>) -> Result<EffectiveModel, CommandError>
             .ok_or_else(|| CommandError::new("repo.not_open", "No repository is open."))?
     };
 
-    load_effective_model_from_repo(repo)
+    load_effective_model_from_repo_recovering_generated_overlay(repo)
 }
 
 fn pick_folder_via_dialog() -> Option<PathBuf> {

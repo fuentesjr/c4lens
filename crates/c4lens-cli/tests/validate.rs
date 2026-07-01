@@ -116,6 +116,33 @@ systems:
 }
 
 #[test]
+fn validate_json_fails_when_generated_overlay_is_invalid() {
+    let repo = fresh_test_dir("invalid-generated-overlay-json");
+    write_model(&repo, "name: Valid Authored\n");
+    write_generated_model(&repo, "name: [unterminated\n");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(1);
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["issues"][0]["severity"], "error");
+    assert_eq!(report["issues"][0]["stage"], "parse");
+    assert_eq!(report["issues"][0]["code"], "parse.invalid_yaml");
+    assert_eq!(
+        report["issues"][0]["message"],
+        "Failed to parse c4/model.generated.yml."
+    );
+
+    cleanup(repo);
+}
+
+#[test]
 fn validate_fails_when_authored_model_is_missing() {
     let repo = fresh_test_dir("missing-model");
     fs::create_dir(repo.join("c4")).expect("create c4 dir");

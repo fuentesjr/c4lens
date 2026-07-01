@@ -14,14 +14,53 @@ const AUTHORED_MODEL_PATH: &str = "c4/model.yml";
 const GENERATED_MODEL_PATH: &str = "c4/model.generated.yml";
 
 pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel, CommandError> {
-    let repo_root = Path::new(&repo.root_path).canonicalize().map_err(|error| {
+    let repo_root = canonical_repo_root(&repo)?;
+    let model_inputs = load_model_inputs(&repo_root)?;
+    build_effective_model(repo, &repo_root, model_inputs)
+}
+
+pub fn load_effective_model_from_repo_recovering_generated_overlay(
+    repo: RepoHandle,
+) -> Result<EffectiveModel, CommandError> {
+    let repo_root = canonical_repo_root(&repo)?;
+    match load_model_inputs(&repo_root) {
+        Ok(model_inputs) => build_effective_model(repo, &repo_root, model_inputs),
+        Err(error) if can_recover_generated_overlay(&repo_root, &error)? => {
+            let authored = load_optional_model_source(&repo_root, AUTHORED_MODEL_PATH, false)?
+                .expect("authored model presence checked before recovery");
+            let mut model = build_effective_model(
+                repo,
+                &repo_root,
+                ModelInputs {
+                    authored: Some(authored),
+                    generated: None,
+                },
+            )?;
+            model
+                .validation
+                .issues
+                .push(generated_overlay_ignored_warning(&error));
+            Ok(model)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn canonical_repo_root(repo: &RepoHandle) -> Result<PathBuf, CommandError> {
+    Path::new(&repo.root_path).canonicalize().map_err(|error| {
         CommandError::with_details(
             "repo.path_missing",
             "Unable to resolve repository root.",
             serde_json::json!({ "error": error.to_string() }),
         )
-    })?;
-    let model_inputs = load_model_inputs(&repo_root)?;
+    })
+}
+
+fn build_effective_model(
+    repo: RepoHandle,
+    repo_root: &Path,
+    model_inputs: ModelInputs,
+) -> Result<EffectiveModel, CommandError> {
     let source_sha = stable_source_sha(&model_inputs.source_parts());
     let authored_path = model_inputs
         .authored
@@ -62,6 +101,52 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
             issues,
         },
     })
+}
+
+fn can_recover_generated_overlay(
+    repo_root: &Path,
+    error: &CommandError,
+) -> Result<bool, CommandError> {
+    if !is_generated_overlay_recoverable_error(error) {
+        return Ok(false);
+    }
+
+    let authored_path = repo_root.join(AUTHORED_MODEL_PATH);
+    let generated_path = repo_root.join(GENERATED_MODEL_PATH);
+    Ok(control_file_is_present(&authored_path)? && control_file_is_present(&generated_path)?)
+}
+
+fn is_generated_overlay_recoverable_error(error: &CommandError) -> bool {
+    error.code.starts_with("parse.")
+        || error.code.starts_with("schema.")
+        || error.code == "model.invalid"
+}
+
+fn generated_overlay_ignored_warning(error: &CommandError) -> ValidationIssue {
+    ValidationIssue {
+        severity: ValidationSeverity::Warning,
+        stage: validation_stage_for_error(&error.code),
+        code: "model.generated_overlay_invalid_ignored".to_string(),
+        message: format!(
+            "Generated overlay {GENERATED_MODEL_PATH} is invalid and was ignored: {}",
+            error.message
+        ),
+        path: Some(GENERATED_MODEL_PATH.to_string()),
+        line: None,
+        column: None,
+    }
+}
+
+fn validation_stage_for_error(code: &str) -> ValidationStage {
+    if code.starts_with("schema.") {
+        ValidationStage::Schema
+    } else if code.starts_with("scan.") {
+        ValidationStage::Scan
+    } else if code.starts_with("semantic.") {
+        ValidationStage::Semantic
+    } else {
+        ValidationStage::Parse
+    }
 }
 
 struct ModelSource {
@@ -1892,7 +1977,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::{load_effective_model_from_repo, repo_handle_from_path};
+    use crate::{
+        load_effective_model_from_repo,
+        load_effective_model_from_repo_recovering_generated_overlay, repo_handle_from_path,
+    };
 
     #[test]
     fn loads_authored_model_yml_from_repo_c4_directory() {
@@ -2250,6 +2338,146 @@ systems:
 
         let repo = repo_handle_from_path(&root).expect("repo handle");
         let error = load_effective_model_from_repo(repo).expect_err("generated yaml should fail");
+
+        assert_eq!(error.code, "parse.invalid_yaml");
+        assert_eq!(error.message, "Failed to parse c4/model.generated.yml.");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn recovering_loader_ignores_invalid_generated_overlay_when_authored_is_valid() {
+        let root = fresh_test_dir("recover-invalid-generated-overlay");
+        write_model(
+            &root,
+            r#"
+name: Authored Model
+actors:
+  customer:
+    name: Customer
+"#,
+        );
+        write_generated_model(&root, "name: [unterminated\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let strict_error =
+            load_effective_model_from_repo(repo.clone()).expect_err("strict loader should fail");
+        assert_eq!(strict_error.code, "parse.invalid_yaml");
+
+        let effective = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect("recovering loader should use authored model");
+
+        assert_eq!(effective.model.name, "Authored Model");
+        assert_eq!(effective.authored_path.as_deref(), Some("c4/model.yml"));
+        assert_eq!(effective.generated_path, None);
+        assert!(effective.validation.ok);
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "model.generated_overlay_invalid_ignored"
+        );
+        assert_eq!(
+            effective.validation.issues[0].path.as_deref(),
+            Some("c4/model.generated.yml")
+        );
+        assert!(effective.validation.issues[0]
+            .message
+            .contains("Failed to parse c4/model.generated.yml."));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn recovering_loader_warns_when_generated_overlay_schema_is_invalid() {
+        let root = fresh_test_dir("recover-schema-invalid-generated-overlay");
+        write_model(&root, "name: Authored Model\n");
+        write_generated_model(
+            &root,
+            r#"
+name: Invalid Generated Overlay
+systems: not a mapping
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let strict_error =
+            load_effective_model_from_repo(repo.clone()).expect_err("strict loader should fail");
+        assert_eq!(strict_error.code, "schema.invalid_type");
+
+        let effective = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect("recovering loader should use authored model");
+
+        assert_eq!(effective.model.name, "Authored Model");
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "model.generated_overlay_invalid_ignored"
+        );
+        assert_eq!(
+            effective.validation.issues[0].stage,
+            crate::ValidationStage::Schema
+        );
+        assert!(effective.validation.issues[0]
+            .message
+            .contains("Model systems must be an object."));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn recovering_loader_does_not_ignore_invalid_authored_model_when_generated_exists() {
+        let root = fresh_test_dir("recover-invalid-authored-with-generated");
+        write_model(&root, "name: [unterminated\n");
+        write_generated_model(&root, "name: Generated Model\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect_err("invalid authored model should fail");
+
+        assert_eq!(error.code, "parse.invalid_yaml");
+        assert_eq!(error.message, "Failed to parse c4/model.yml.");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn recovering_loader_warns_when_generated_overlay_model_is_invalid() {
+        let root = fresh_test_dir("recover-model-invalid-generated-overlay");
+        write_model(&root, "name: Authored Model\n");
+        fs::remove_file(root.join("c4/model.generated.yml")).ok();
+        fs::create_dir_all(root.join("c4/model.generated.yml"))
+            .expect("create generated model directory");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let strict_error =
+            load_effective_model_from_repo(repo.clone()).expect_err("strict loader should fail");
+        assert_eq!(strict_error.code, "model.invalid");
+
+        let effective = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect("recovering loader should use authored model");
+
+        assert_eq!(effective.model.name, "Authored Model");
+        assert_eq!(effective.generated_path, None);
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "model.generated_overlay_invalid_ignored"
+        );
+        assert!(effective.validation.issues[0]
+            .message
+            .contains("Failed to read c4/model.generated.yml."));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn recovering_loader_does_not_ignore_invalid_generated_only_model() {
+        let root = fresh_test_dir("recover-invalid-generated-only");
+        write_generated_model(&root, "name: [unterminated\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let error = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect_err("generated-only invalid model should fail");
 
         assert_eq!(error.code, "parse.invalid_yaml");
         assert_eq!(error.message, "Failed to parse c4/model.generated.yml.");
