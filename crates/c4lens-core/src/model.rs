@@ -166,6 +166,18 @@ pub struct ScanSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeRef {
+    pub element_slug: Slug,
+    pub path: String,
+    pub absolute_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
     pub from: Slug,
     pub to: Slug,

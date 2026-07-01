@@ -4,11 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
 use ignore::{DirEntry, WalkBuilder};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    load_effective_model_from_repo_recovering_generated_overlay, CommandError, RepoHandle,
+    load_effective_model_from_repo_recovering_generated_overlay, CodeRef, CommandError, RepoHandle,
     ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
 };
 
@@ -39,6 +39,71 @@ pub fn scan_repo(repo: RepoHandle, options: ScanOptions) -> Result<ScanSummary, 
     let connection = Connection::open(&index_path).map_err(sqlite_error)?;
     migrate_index(&connection)?;
     scan_repo_with_connection(connection, repo, options.force, started, &index_exclusions)
+}
+
+pub fn get_element_code(
+    repo: &RepoHandle,
+    index_path: &Path,
+    element_slug: &str,
+) -> Result<Option<CodeRef>, CommandError> {
+    let connection = Connection::open(index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT files.path, files.lang
+FROM element_sources
+JOIN files ON files.id = element_sources.file_id
+WHERE element_sources.repo_id = ?1
+  AND element_sources.element_slug = ?2
+  AND element_sources.source = 'authored_code_path'
+ORDER BY element_sources.source_key
+LIMIT 1
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let row = statement
+        .query_row(params![repo.id, element_slug], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .optional()
+        .map_err(sqlite_error)?;
+
+    let Some((relative_path, language)) = row else {
+        return Ok(None);
+    };
+
+    let repo_root = PathBuf::from(&repo.root_path);
+    let absolute_path = match resolve_repo_file(&repo_root, &relative_path) {
+        Ok(path) => path,
+        Err(error) if error.code == "repo.path_missing" => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !absolute_path.is_file() {
+        return Ok(None);
+    }
+
+    let bytes = match fs::read(&absolute_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CommandError::with_details(
+                "scan.failed",
+                "Failed to read indexed source file.",
+                serde_json::json!({ "path": relative_path, "error": error.to_string() }),
+            ));
+        }
+    };
+    let snippet = snippet_from_utf8_bytes(&bytes);
+
+    Ok(Some(CodeRef {
+        element_slug: element_slug.to_string(),
+        path: relative_path.to_string(),
+        absolute_path: absolute_path.to_string_lossy().to_string(),
+        language,
+        snippet,
+    }))
 }
 
 pub fn default_index_path(repo: &RepoHandle) -> PathBuf {
@@ -618,6 +683,80 @@ fn normalize_repo_relative_code_file(repo_root: &Path, code_path: &str) -> Optio
     relative_posix_path(repo_root, &joined)
 }
 
+fn resolve_repo_file(repo_root: &Path, relative_path: &str) -> Result<PathBuf, CommandError> {
+    let path = Path::new(relative_path);
+    if path.is_absolute()
+        || relative_path.contains('\\')
+        || relative_path.contains('\0')
+        || relative_path.split('/').any(|part| part.is_empty())
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(CommandError::with_details(
+            "repo.path_denied",
+            "Indexed source path is not a valid repository-relative file path.",
+            serde_json::json!({ "path": relative_path }),
+        ));
+    }
+
+    let joined = repo_root.join(path);
+    let resolved = joined.canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "repo.path_missing",
+            "Indexed source file no longer exists.",
+            serde_json::json!({ "path": relative_path, "error": error.to_string() }),
+        )
+    })?;
+    if !resolved.starts_with(repo_root) {
+        return Err(CommandError::with_details(
+            "repo.path_denied",
+            "Indexed source path resolves outside the repository.",
+            serde_json::json!({ "path": relative_path }),
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn snippet_from_utf8_bytes(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut output = String::new();
+    for (index, line) in text.lines().take(200).enumerate() {
+        if index > 0 {
+            if output.len() + 1 > 16 * 1024 {
+                break;
+            }
+            output.push('\n');
+        }
+
+        let remaining = (16 * 1024_usize).saturating_sub(output.len());
+        if remaining == 0 {
+            break;
+        }
+        if line.len() <= remaining {
+            output.push_str(line);
+        } else {
+            let mut end = 0;
+            for (byte_index, character) in line.char_indices() {
+                let next = byte_index + character.len_utf8();
+                if next > remaining {
+                    break;
+                }
+                end = next;
+            }
+            output.push_str(&line[..end]);
+            break;
+        }
+    }
+
+    if text.ends_with('\n') && output.lines().count() < 200 && output.len() < 16 * 1024 {
+        output.push('\n');
+    }
+
+    Some(output)
+}
+
 fn relative_posix_path(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let mut parts = Vec::new();
@@ -721,7 +860,7 @@ mod tests {
 
     use rusqlite::{params, Connection};
 
-    use crate::{repo_handle_from_path, scan_repo, ScanOptions};
+    use crate::{get_element_code, repo_handle_from_path, scan_repo, ScanOptions};
 
     use super::migrate_index;
 
@@ -945,6 +1084,232 @@ WHERE repo_id = ?1 AND path IN ('debug.log', 'node_modules/pkg/index.js')
             .expect("query indexed index files");
         assert_eq!(index_file_count, 0);
 
+        cleanup(root);
+    }
+
+    #[test]
+    fn element_code_resolves_indexed_file_source_with_capped_snippet() {
+        let root = fresh_test_dir("code-ref-file-source");
+        let index_root = fresh_test_dir("code-ref-file-source-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Code Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(
+            &root,
+            "src/main.rs",
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let code = get_element_code(&repo, &db_path, "app")
+            .expect("resolve code")
+            .expect("code ref");
+
+        assert_eq!(code.element_slug, "app");
+        assert_eq!(code.path, "src/main.rs");
+        assert_eq!(code.language.as_deref(), Some("rust"));
+        assert_eq!(
+            code.absolute_path,
+            fs::canonicalize(root.join("src/main.rs"))
+                .expect("canonical source")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            code.snippet.as_deref(),
+            Some("fn main() {\n    println!(\"hello\");\n}\n")
+        );
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn element_code_returns_none_after_source_file_is_deleted_and_rescanned() {
+        let root = fresh_test_dir("code-ref-deleted-source");
+        let index_root = fresh_test_dir("code-ref-deleted-source-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Code Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+        fs::remove_file(root.join("src/main.rs")).expect("remove source");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan repo");
+
+        let code = get_element_code(&repo, &db_path, "app").expect("resolve code");
+
+        assert!(code.is_none());
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn element_code_returns_none_for_stale_deleted_source_file() {
+        let root = fresh_test_dir("code-ref-stale-deleted-source");
+        let index_root = fresh_test_dir("code-ref-stale-deleted-source-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Code Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+        fs::remove_file(root.join("src/main.rs")).expect("remove source");
+
+        let code = get_element_code(&repo, &db_path, "app").expect("resolve code");
+
+        assert!(code.is_none());
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn element_code_caps_snippet_to_200_lines_and_16_kib() {
+        let root = fresh_test_dir("code-ref-snippet-cap");
+        let index_root = fresh_test_dir("code-ref-snippet-cap-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Code Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        let source = (0..260)
+            .map(|index| format!("println!(\"line {index:03}\");"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_file(&root, "src/main.rs", &source);
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let snippet = get_element_code(&repo, &db_path, "app")
+            .expect("resolve code")
+            .expect("code ref")
+            .snippet
+            .expect("snippet");
+
+        assert_eq!(snippet.lines().count(), 200);
+        assert!(snippet.len() <= 16 * 1024);
+        assert!(snippet.contains("line 199"));
+        assert!(!snippet.contains("line 200"));
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn element_code_does_not_read_symlinked_file_outside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let root = fresh_test_dir("code-ref-outside-symlink");
+        let outside = fresh_test_dir("code-ref-outside-target");
+        let index_root = fresh_test_dir("code-ref-outside-symlink-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Code Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&outside, "main.rs", "fn outside() {}\n");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        symlink(outside.join("main.rs"), root.join("src/main.rs")).expect("create symlink");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let code = get_element_code(&repo, &db_path, "app").expect("resolve code");
+
+        assert!(code.is_none());
+
+        cleanup(index_root);
+        cleanup(outside);
         cleanup(root);
     }
 
