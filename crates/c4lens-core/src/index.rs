@@ -1,0 +1,970 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::time::{Instant, UNIX_EPOCH};
+
+use ignore::{DirEntry, WalkBuilder};
+use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    load_effective_model_from_repo_recovering_generated_overlay, CommandError, RepoHandle,
+    ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
+};
+
+const MIGRATION_VERSION: i64 = 1;
+
+#[derive(Debug, Clone, Default)]
+pub struct ScanOptions {
+    pub force: bool,
+    pub index_path: Option<PathBuf>,
+}
+
+pub fn scan_repo(repo: RepoHandle, options: ScanOptions) -> Result<ScanSummary, CommandError> {
+    let started = Instant::now();
+    let index_path = options
+        .index_path
+        .unwrap_or_else(|| default_index_path(&repo));
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CommandError::with_details(
+                "scan.failed",
+                "Failed to create SQLite index directory.",
+                serde_json::json!({ "path": parent.display().to_string(), "error": error.to_string() }),
+            )
+        })?;
+    }
+
+    let index_exclusions = index_exclusion_paths(&index_path)?;
+    let connection = Connection::open(&index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+    scan_repo_with_connection(connection, repo, options.force, started, &index_exclusions)
+}
+
+pub fn default_index_path(repo: &RepoHandle) -> PathBuf {
+    if let Ok(index_dir) = std::env::var("C4LENS_INDEX_DIR") {
+        return PathBuf::from(index_dir).join(format!("{}.sqlite3", repo.id));
+    }
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library")
+            .join("Application Support")
+            .join("c4lens")
+            .join("indexes")
+    } else {
+        home.join(".local")
+            .join("share")
+            .join("c4lens")
+            .join("indexes")
+    };
+    base.join(format!("{}.sqlite3", repo.id))
+}
+
+pub fn migrate_index(connection: &Connection) -> Result<(), CommandError> {
+    connection
+        .execute_batch(
+            r#"
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS repos (
+  id TEXT PRIMARY KEY,
+  root_path TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  vcs TEXT NOT NULL DEFAULT 'none' CHECK (vcs IN ('git', 'none')),
+  head_sha TEXT,
+  scan_token TEXT,
+  scanned_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  lang TEXT,
+  content_sha TEXT NOT NULL,
+  mtime_ms INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(repo_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_repo_lang ON files(repo_id, lang);
+CREATE INDEX IF NOT EXISTS idx_files_repo_sha ON files(repo_id, content_sha);
+
+CREATE TABLE IF NOT EXISTS symbols (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  qualified_name TEXT,
+  start_line INTEGER NOT NULL,
+  start_column INTEGER NOT NULL DEFAULT 0,
+  end_line INTEGER NOT NULL,
+  end_column INTEGER NOT NULL DEFAULT 0,
+  parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_qualified_name ON symbols(qualified_name);
+
+CREATE TABLE IF NOT EXISTS imports (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  target_module TEXT NOT NULL,
+  target_path TEXT,
+  resolved_file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('internal', 'external', 'unknown'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
+CREATE INDEX IF NOT EXISTS idx_imports_resolved_file ON imports(resolved_file_id);
+CREATE INDEX IF NOT EXISTS idx_imports_target_module ON imports(target_module);
+
+CREATE TABLE IF NOT EXISTS element_sources (
+  id INTEGER PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  element_slug TEXT NOT NULL,
+  file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+  symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+  path_glob TEXT,
+  source_key TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('authored_code_path', 'generated_manifest', 'generated_component')),
+  UNIQUE(repo_id, element_slug, source_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_element_sources_slug ON element_sources(repo_id, element_slug);
+
+CREATE TABLE IF NOT EXISTS model_cache (
+  repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+  source_sha TEXT NOT NULL,
+  derived_json TEXT NOT NULL,
+  cached_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+"#,
+        )
+        .map_err(sqlite_error)?;
+
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)",
+            params![MIGRATION_VERSION],
+        )
+        .map_err(sqlite_error)?;
+
+    Ok(())
+}
+
+fn scan_repo_with_connection(
+    mut connection: Connection,
+    repo: RepoHandle,
+    force: bool,
+    started: Instant,
+    index_exclusions: &BTreeSet<PathBuf>,
+) -> Result<ScanSummary, CommandError> {
+    let repo_root = PathBuf::from(&repo.root_path);
+    let mut warnings = Vec::new();
+    let scanned_files = collect_scan_files(&repo_root, index_exclusions, &mut warnings)?;
+
+    let transaction = connection.transaction().map_err(sqlite_error)?;
+    let previous = if force {
+        delete_indexed_repo_content(&transaction, &repo.id)?;
+        BTreeMap::new()
+    } else {
+        previous_files_by_path(&transaction, &repo.id)?
+    };
+
+    upsert_repo(&transaction, &repo)?;
+
+    let mut current_paths = BTreeSet::new();
+    let mut file_ids_by_path = BTreeMap::new();
+    let mut changed_files = 0;
+
+    for scanned_file in &scanned_files {
+        current_paths.insert(scanned_file.path.clone());
+        let previous_file = previous.get(&scanned_file.path);
+        let file_changed = previous_file
+            .map(|previous| previous.content_sha != scanned_file.content_sha)
+            .unwrap_or(true);
+
+        if file_changed {
+            changed_files += 1;
+            if let Some(previous_file) = previous_file {
+                delete_file_analysis(&transaction, previous_file.id)?;
+            }
+        }
+
+        upsert_file(&transaction, &repo.id, scanned_file)?;
+        let file_id = file_id_for_path(&transaction, &repo.id, &scanned_file.path)?;
+        file_ids_by_path.insert(scanned_file.path.clone(), file_id);
+    }
+
+    let mut deleted_files = 0;
+    for (path, previous_file) in &previous {
+        if !current_paths.contains(path) {
+            deleted_files += 1;
+            transaction
+                .execute("DELETE FROM files WHERE id = ?1", params![previous_file.id])
+                .map_err(sqlite_error)?;
+        }
+    }
+
+    rebuild_explicit_element_sources(&transaction, &repo, &repo_root, &file_ids_by_path)?;
+
+    let scan_token = scan_token_for_files(scanned_files.iter());
+    transaction
+        .execute(
+            r#"
+UPDATE repos
+SET scan_token = ?1,
+    scanned_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?2
+"#,
+            params![scan_token, repo.id],
+        )
+        .map_err(sqlite_error)?;
+
+    if changed_files > 0 || deleted_files > 0 {
+        transaction
+            .execute(
+                "DELETE FROM model_cache WHERE repo_id = ?1",
+                params![repo.id],
+            )
+            .map_err(sqlite_error)?;
+    }
+
+    transaction.commit().map_err(sqlite_error)?;
+
+    Ok(ScanSummary {
+        repo,
+        scan_token,
+        scanned_files: scanned_files.len(),
+        changed_files,
+        deleted_files,
+        symbols: 0,
+        imports: 0,
+        duration_ms: started.elapsed().as_millis(),
+        warnings,
+    })
+}
+
+fn upsert_repo(connection: &Connection, repo: &RepoHandle) -> Result<(), CommandError> {
+    let vcs = repo.vcs.as_deref().unwrap_or("none");
+    connection
+        .execute(
+            r#"
+INSERT INTO repos(id, root_path, name, vcs, head_sha)
+VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(id) DO UPDATE SET
+  root_path = excluded.root_path,
+  name = excluded.name,
+  vcs = excluded.vcs,
+  head_sha = excluded.head_sha
+"#,
+            params![repo.id, repo.root_path, repo.name, vcs, repo.head_sha],
+        )
+        .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn previous_files_by_path(
+    connection: &Connection,
+    repo_id: &str,
+) -> Result<BTreeMap<String, PreviousFile>, CommandError> {
+    let mut statement = connection
+        .prepare("SELECT id, path, content_sha FROM files WHERE repo_id = ?1")
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id], |row| {
+            Ok(PreviousFile {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                content_sha: row.get(2)?,
+            })
+        })
+        .map_err(sqlite_error)?;
+
+    let mut output = BTreeMap::new();
+    for row in rows {
+        let previous = row.map_err(sqlite_error)?;
+        output.insert(previous.path.clone(), previous);
+    }
+    Ok(output)
+}
+
+fn delete_indexed_repo_content(connection: &Connection, repo_id: &str) -> Result<(), CommandError> {
+    connection
+        .execute(
+            "DELETE FROM element_sources WHERE repo_id = ?1",
+            params![repo_id],
+        )
+        .map_err(sqlite_error)?;
+    connection
+        .execute("DELETE FROM files WHERE repo_id = ?1", params![repo_id])
+        .map_err(sqlite_error)?;
+    connection
+        .execute(
+            "DELETE FROM model_cache WHERE repo_id = ?1",
+            params![repo_id],
+        )
+        .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn delete_file_analysis(connection: &Connection, file_id: i64) -> Result<(), CommandError> {
+    connection
+        .execute(
+            "DELETE FROM element_sources WHERE file_id = ?1",
+            params![file_id],
+        )
+        .map_err(sqlite_error)?;
+    connection
+        .execute("DELETE FROM imports WHERE file_id = ?1", params![file_id])
+        .map_err(sqlite_error)?;
+    connection
+        .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])
+        .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn upsert_file(
+    connection: &Connection,
+    repo_id: &str,
+    file: &ScannedFile,
+) -> Result<(), CommandError> {
+    connection
+        .execute(
+            r#"
+INSERT INTO files(repo_id, path, lang, content_sha, mtime_ms, size_bytes)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(repo_id, path) DO UPDATE SET
+  lang = excluded.lang,
+  content_sha = excluded.content_sha,
+  mtime_ms = excluded.mtime_ms,
+  size_bytes = excluded.size_bytes,
+  indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+"#,
+            params![
+                repo_id,
+                file.path,
+                file.lang,
+                file.content_sha,
+                file.mtime_ms,
+                file.size_bytes
+            ],
+        )
+        .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn file_id_for_path(
+    connection: &Connection,
+    repo_id: &str,
+    path: &str,
+) -> Result<i64, CommandError> {
+    connection
+        .query_row(
+            "SELECT id FROM files WHERE repo_id = ?1 AND path = ?2",
+            params![repo_id, path],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
+}
+
+fn rebuild_explicit_element_sources(
+    connection: &Connection,
+    repo: &RepoHandle,
+    repo_root: &Path,
+    file_ids_by_path: &BTreeMap<String, i64>,
+) -> Result<(), CommandError> {
+    connection
+        .execute(
+            "DELETE FROM element_sources WHERE repo_id = ?1 AND source = 'authored_code_path'",
+            params![repo.id],
+        )
+        .map_err(sqlite_error)?;
+
+    let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone())
+    else {
+        return Ok(());
+    };
+
+    for element in model.elements_by_slug.values() {
+        let Some(code_path) = element.base.code.as_deref() else {
+            continue;
+        };
+        let Some(relative_path) = normalize_repo_relative_code_file(repo_root, code_path) else {
+            continue;
+        };
+        let Some(file_id) = file_ids_by_path.get(&relative_path) else {
+            continue;
+        };
+        let source_key = format!("path:{relative_path}");
+        connection
+            .execute(
+                r#"
+INSERT INTO element_sources(repo_id, element_slug, file_id, source_key, source)
+VALUES (?1, ?2, ?3, ?4, 'authored_code_path')
+ON CONFLICT(repo_id, element_slug, source_key) DO UPDATE SET
+  file_id = excluded.file_id,
+  symbol_id = NULL,
+  path_glob = NULL,
+  source = excluded.source
+"#,
+                params![repo.id, element.base.slug, file_id, source_key],
+            )
+            .map_err(sqlite_error)?;
+    }
+
+    Ok(())
+}
+
+fn collect_scan_files(
+    repo_root: &Path,
+    index_exclusions: &BTreeSet<PathBuf>,
+    warnings: &mut Vec<ValidationIssue>,
+) -> Result<Vec<ScannedFile>, CommandError> {
+    let mut files = Vec::new();
+    let mut builder = WalkBuilder::new(repo_root);
+    builder
+        .follow_links(false)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|entry| should_scan_entry(entry));
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                warnings.push(scan_warning(
+                    "scan.walk_failed",
+                    "Failed to walk a repository entry.",
+                    None,
+                ));
+                continue;
+            }
+        };
+
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if entry.depth() == 0 || file_type.is_dir() {
+            continue;
+        }
+
+        let path = entry.path();
+        if index_exclusions.contains(path) {
+            continue;
+        }
+
+        let metadata = if file_type.is_symlink() {
+            let resolved = path.canonicalize().map_err(|error| {
+                CommandError::with_details(
+                    "path.invalid",
+                    "Unable to resolve scanned symlink.",
+                    serde_json::json!({ "path": path.display().to_string(), "error": error.to_string() }),
+                )
+            })?;
+            if !resolved.starts_with(repo_root) {
+                warnings.push(scan_warning(
+                    "scan.path_outside_repo",
+                    "Skipping symlinked file that resolves outside the repository.",
+                    relative_posix_path(repo_root, path),
+                ));
+                continue;
+            }
+            fs::metadata(path)
+        } else {
+            fs::metadata(path)
+        }
+        .map_err(|error| {
+            CommandError::with_details(
+                "scan.failed",
+                "Failed to inspect scanned file.",
+                serde_json::json!({ "path": path.display().to_string(), "error": error.to_string() }),
+            )
+        })?;
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let Some(relative_path) = relative_posix_path(repo_root, path) else {
+            continue;
+        };
+        let contents = fs::read(path).map_err(|error| {
+            CommandError::with_details(
+                "scan.failed",
+                "Failed to read scanned file.",
+                serde_json::json!({ "path": relative_path, "error": error.to_string() }),
+            )
+        })?;
+        files.push(ScannedFile {
+            lang: language_for_path(&relative_path).map(str::to_string),
+            path: relative_path,
+            content_sha: sha256_hex(&contents),
+            mtime_ms: metadata_mtime_ms(&metadata),
+            size_bytes: metadata.len() as i64,
+        });
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn index_exclusion_paths(index_path: &Path) -> Result<BTreeSet<PathBuf>, CommandError> {
+    let absolute_index_path = if index_path.is_absolute() {
+        index_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CommandError::with_details(
+                    "scan.failed",
+                    "Failed to resolve current directory for SQLite index path.",
+                    serde_json::json!({ "error": error.to_string() }),
+                )
+            })?
+            .join(index_path)
+    };
+    let parent = absolute_index_path.parent().ok_or_else(|| {
+        CommandError::new(
+            "scan.failed",
+            "SQLite index path must include a parent directory.",
+        )
+    })?;
+    let file_name = absolute_index_path.file_name().ok_or_else(|| {
+        CommandError::new("scan.failed", "SQLite index path must include a file name.")
+    })?;
+    let parent = parent.canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "scan.failed",
+            "Failed to resolve SQLite index directory.",
+            serde_json::json!({ "path": parent.display().to_string(), "error": error.to_string() }),
+        )
+    })?;
+    let db_path = parent.join(file_name);
+    let file_name = file_name.to_string_lossy();
+
+    let mut paths = BTreeSet::new();
+    paths.insert(db_path.clone());
+    paths.insert(parent.join(format!("{file_name}-wal")));
+    paths.insert(parent.join(format!("{file_name}-shm")));
+    Ok(paths)
+}
+
+fn should_scan_entry(entry: &DirEntry) -> bool {
+    if entry.depth() == 0
+        || !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+    {
+        return true;
+    }
+
+    let Some(name) = entry.file_name().to_str() else {
+        return true;
+    };
+    if matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | "tmp"
+            | "log"
+            | "coverage"
+    ) {
+        return false;
+    }
+
+    !(name == "bundle"
+        && entry
+            .path()
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|parent| parent.to_str())
+            == Some("vendor"))
+}
+
+fn normalize_repo_relative_code_file(repo_root: &Path, code_path: &str) -> Option<String> {
+    let path = Path::new(code_path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return None;
+    }
+
+    let joined = repo_root.join(path);
+    let resolved = joined.canonicalize().ok()?;
+    if !resolved.starts_with(repo_root) || !resolved.is_file() {
+        return None;
+    }
+    relative_posix_path(repo_root, &joined)
+}
+
+fn relative_posix_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().to_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+fn metadata_mtime_ms(metadata: &fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn scan_token_for_files<'a>(files: impl Iterator<Item = &'a ScannedFile>) -> String {
+    let mut digest = Sha256::new();
+    for file in files {
+        digest.update(file.path.as_bytes());
+        digest.update([0]);
+        digest.update(file.content_sha.as_bytes());
+        digest.update([0]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
+}
+
+fn language_for_path(path: &str) -> Option<&'static str> {
+    let extension = Path::new(path).extension()?.to_str()?;
+    match extension {
+        "rs" => Some("rust"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" => Some("javascript"),
+        "rb" => Some("ruby"),
+        "py" => Some("python"),
+        "go" => Some("go"),
+        "java" => Some("java"),
+        "kt" | "kts" => Some("kotlin"),
+        "swift" => Some("swift"),
+        "cs" => Some("csharp"),
+        "php" => Some("php"),
+        "sql" => Some("sql"),
+        "yml" | "yaml" => Some("yaml"),
+        "json" => Some("json"),
+        "md" => Some("markdown"),
+        _ => None,
+    }
+}
+
+fn scan_warning(code: &str, message: &str, path: Option<String>) -> ValidationIssue {
+    ValidationIssue {
+        severity: ValidationSeverity::Warning,
+        stage: ValidationStage::Scan,
+        code: code.to_string(),
+        message: message.to_string(),
+        path,
+        line: None,
+        column: None,
+    }
+}
+
+fn sqlite_error(error: rusqlite::Error) -> CommandError {
+    CommandError::with_details(
+        "scan.failed",
+        "SQLite index operation failed.",
+        serde_json::json!({ "error": error.to_string() }),
+    )
+}
+
+struct PreviousFile {
+    id: i64,
+    path: String,
+    content_sha: String,
+}
+
+struct ScannedFile {
+    path: String,
+    lang: Option<String>,
+    content_sha: String,
+    mtime_ms: i64,
+    size_bytes: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rusqlite::{params, Connection};
+
+    use crate::{repo_handle_from_path, scan_repo, ScanOptions};
+
+    use super::migrate_index;
+
+    #[test]
+    fn migrations_create_required_tables_and_indexes() {
+        let root = fresh_test_dir("migrations");
+        let db_path = root.join("index.sqlite3");
+        let connection = Connection::open(&db_path).expect("open db");
+
+        migrate_index(&connection).expect("migrate index");
+
+        for table in [
+            "schema_migrations",
+            "repos",
+            "files",
+            "symbols",
+            "imports",
+            "element_sources",
+            "model_cache",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .expect("query table");
+            assert_eq!(count, 1, "{table} table should exist");
+        }
+
+        for index in [
+            "idx_files_repo_lang",
+            "idx_files_repo_sha",
+            "idx_element_sources_slug",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    params![index],
+                    |row| row.get(0),
+                )
+                .expect("query index");
+            assert_eq!(count, 1, "{index} should exist");
+        }
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_indexes_file_rows_and_explicit_element_sources() {
+        let root = fresh_test_dir("scan-file-rows");
+        let index_root = fresh_test_dir("scan-file-rows-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+    code: src/main.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+        write_file(&root, "src/lib.rs", "pub fn run() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert_eq!(summary.scanned_files, 3);
+        assert_eq!(summary.changed_files, 3);
+        assert_eq!(summary.deleted_files, 0);
+        assert_eq!(summary.symbols, 0);
+        assert_eq!(summary.imports, 0);
+        assert!(summary.scan_token.len() >= 32);
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let file_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE repo_id = ?1",
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query files");
+        assert_eq!(file_count, 3);
+
+        let source_key: String = connection
+            .query_row(
+                "SELECT source_key FROM element_sources WHERE repo_id = ?1 AND element_slug = 'app'",
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query source");
+        assert_eq!(source_key, "path:src/main.rs");
+
+        let rescan = scan_repo(
+            repo,
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan repo");
+        assert_eq!(rescan.scanned_files, 3);
+        assert_eq!(rescan.changed_files, 0);
+        assert_eq!(rescan.deleted_files, 0);
+
+        fs::remove_file(root.join("src/lib.rs")).expect("remove file");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let delete_rescan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan after delete");
+        assert_eq!(delete_rescan.scanned_files, 2);
+        assert_eq!(delete_rescan.changed_files, 0);
+        assert_eq!(delete_rescan.deleted_files, 1);
+
+        let file_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE repo_id = ?1",
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query files after delete");
+        assert_eq!(file_count, 2);
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_respects_gitignore_and_always_excluded_directories() {
+        let root = fresh_test_dir("scan-ignore-rules");
+        let index_root = fresh_test_dir("scan-ignore-rules-index");
+        let db_path = index_root.join("index.sqlite3");
+        fs::create_dir(root.join(".git")).expect("create git dir");
+        write_file(&root, ".gitignore", "*.log\n");
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+        write_file(&root, "debug.log", "ignored\n");
+        write_file(&root, "node_modules/pkg/index.js", "ignored\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert_eq!(summary.scanned_files, 2);
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let ignored_count: i64 = connection
+            .query_row(
+                r#"
+SELECT COUNT(*) FROM files
+WHERE repo_id = ?1 AND path IN ('debug.log', 'node_modules/pkg/index.js')
+"#,
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query ignored files");
+        assert_eq!(ignored_count, 0);
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_excludes_custom_index_path_inside_repo() {
+        let root = fresh_test_dir("scan-in-repo-index");
+        let db_path = root.join(".c4lens-index/index.sqlite3");
+        write_file(&root, "c4/model.yml", "name: Scan Repo\n");
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let first_scan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+        assert_eq!(first_scan.scanned_files, 2);
+        assert_eq!(first_scan.changed_files, 2);
+
+        let second_scan = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan repo");
+        assert_eq!(second_scan.scanned_files, 2);
+        assert_eq!(second_scan.changed_files, 0);
+        assert_eq!(second_scan.scan_token, first_scan.scan_token);
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let index_file_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE repo_id = ?1 AND path LIKE '.c4lens-index/%'",
+                params![repo.id],
+                |row| row.get(0),
+            )
+            .expect("query indexed index files");
+        assert_eq!(index_file_count, 0);
+
+        cleanup(root);
+    }
+
+    fn fresh_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("c4lens-core-{name}-{unique}"));
+        fs::create_dir_all(&root).expect("create test root");
+        root
+    }
+
+    fn write_file(root: &PathBuf, relative_path: &str, contents: &str) {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, contents).expect("write file");
+    }
+
+    fn cleanup(root: PathBuf) {
+        fs::remove_dir_all(root).ok();
+    }
+}

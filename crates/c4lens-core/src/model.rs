@@ -152,6 +152,20 @@ impl ValidationReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanSummary {
+    pub repo: RepoHandle,
+    pub scan_token: String,
+    pub scanned_files: usize,
+    pub changed_files: usize,
+    pub deleted_files: usize,
+    pub symbols: usize,
+    pub imports: usize,
+    pub duration_ms: u128,
+    pub warnings: Vec<ValidationIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
     pub from: Slug,
     pub to: Slug,

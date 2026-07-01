@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
-use c4lens_core::{load_effective_model_from_repo, repo_handle_from_path};
+use c4lens_core::{load_effective_model_from_repo, repo_handle_from_path, scan_repo, ScanOptions};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -127,12 +127,36 @@ fn run_scan(repo: Option<PathBuf>, force: bool, json: bool) -> i32 {
         }
     };
 
-    let summary = serde_json::json!({
-        "repo": repo.name,
-        "scanned": false,
-        "force": force,
-        "message": "Phase-0 stub: index scanning is not implemented yet."
-    });
+    let summary = match scan_repo(
+        repo.clone(),
+        ScanOptions {
+            force,
+            index_path: None,
+        },
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": false,
+                        "issues": [{
+                            "severity": "error",
+                            "stage": "scan",
+                            "code": error.code,
+                            "message": error.message,
+                            "details": error.details,
+                        }]
+                    }))
+                    .expect("failed to serialize scan error")
+                );
+            } else {
+                eprintln!("{}", error.message);
+            }
+            return 4;
+        }
+    };
 
     if json {
         println!(
@@ -140,8 +164,11 @@ fn run_scan(repo: Option<PathBuf>, force: bool, json: bool) -> i32 {
             serde_json::to_string_pretty(&summary).expect("failed to serialize summary")
         );
     } else {
-        println!("scanned=0 files in {}", repo.name);
-        println!("Phase-0 stub: scanning is not implemented yet.");
+        println!(
+            "scanned={} changed={} deleted={} in {}",
+            summary.scanned_files, summary.changed_files, summary.deleted_files, repo.name
+        );
+        println!("scan token: {}", summary.scan_token);
     }
 
     0
