@@ -1,7 +1,7 @@
 import type { EffectiveModel, ElementNode, Relationship, Slug } from "../model/types";
 
 export type ViewScope =
-  | { level: "context" }
+  | { level: "context"; slug?: Slug }
   | { level: "container"; slug: Slug }
   | { level: "component"; slug: Slug };
 
@@ -90,6 +90,30 @@ function visibleNodeIds(model: EffectiveModel, scope: ViewScope): Set<Slug> {
   const visible = new Set<Slug>();
 
   if (scope.level === "context") {
+    if (scope.slug) {
+      const scopedSystem = model.elementsBySlug[scope.slug];
+      if (scopedSystem?.type !== "system") {
+        return visible;
+      }
+
+      visible.add(scopedSystem.slug);
+      model.relationships.forEach((relationship) => {
+        const source = projectEndpoint(model.elementsBySlug[relationship.from], scope);
+        const target = projectEndpoint(model.elementsBySlug[relationship.to], scope);
+
+        if (!source || !target || source === target) {
+          return;
+        }
+
+        if (source === scopedSystem.slug) {
+          visible.add(target);
+        } else if (target === scopedSystem.slug) {
+          visible.add(source);
+        }
+      });
+      return visible;
+    }
+
     elements.forEach((element) => {
       if (element.type === "actor" || element.type === "system") {
         visible.add(element.slug);
