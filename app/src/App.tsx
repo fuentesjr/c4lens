@@ -28,10 +28,10 @@ import { openRepositoryFromDialog, fetchActiveModel, isTauriDesktop } from "./ip
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
 import type { EffectiveModel, ElementNode, ValidationIssue } from "./model/types";
+import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
   availableContainers,
   availableSystems,
-  defaultScope,
   deriveView,
   type DerivedView,
   type ViewScope,
@@ -42,9 +42,11 @@ const nodeTypes = {
 };
 
 export function App() {
+  const initialRoute = useMemo(() => resolveHashRoute(currentHashRoute(), sampleModel), []);
   const [model, setModel] = useState<EffectiveModel>(sampleModel);
-  const [scope, setScope] = useState<ViewScope>(() => defaultScope(sampleModel));
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [scope, setScope] = useState<ViewScope>(initialRoute.scope);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialRoute.selectedSlug);
+  const [routeIssue, setRouteIssue] = useState<RouteIssue | null>(initialRoute.issue);
   const [status, setStatus] = useState("Sample model ready");
   const [isOpening, setIsOpening] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
@@ -63,6 +65,74 @@ export function App() {
     () => (activeSystemSlug ? availableContainers(model, activeSystemSlug) : []),
     [activeSystemSlug, model],
   );
+
+  const applyRoute = useCallback(
+    (hash: string, routeModel: EffectiveModel = model) => {
+      const nextRoute = resolveHashRoute(hash, routeModel);
+      setScope(nextRoute.scope);
+      setSelectedSlug(nextRoute.selectedSlug);
+      setRouteIssue(nextRoute.issue);
+    },
+    [model],
+  );
+
+  const navigateTo = useCallback(
+    (nextScope: ViewScope, nextSelectedSlug: string | null = null) => {
+      const nextHash = buildHashRoute(nextScope, nextSelectedSlug);
+      if (currentHashRoute() !== nextHash) {
+        window.location.hash = nextHash;
+      }
+      applyRoute(nextHash);
+    },
+    [applyRoute],
+  );
+
+  const selectNode = useCallback(
+    (slug: string) => {
+      if (routeIssue?.kind === "route") {
+        return;
+      }
+
+      const element = model.elementsBySlug[slug];
+      if (scope.level === "component" && element?.type === "component" && element.containerSlug === scope.slug) {
+        navigateTo(scope, slug);
+        return;
+      }
+
+      if (routeIssue?.kind === "selection") {
+        navigateTo(scope);
+        return;
+      }
+
+      setSelectedSlug(slug);
+      setRouteIssue(null);
+    },
+    [model.elementsBySlug, navigateTo, routeIssue?.kind, scope],
+  );
+
+  const clearSelection = useCallback(() => {
+    if (routeIssue?.kind === "route") {
+      return;
+    }
+
+    if (selectedSlug || routeIssue?.kind === "selection") {
+      navigateTo(scope);
+      return;
+    }
+
+    setSelectedSlug(null);
+  }, [navigateTo, routeIssue?.kind, scope, selectedSlug]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      applyRoute(currentHashRoute());
+    };
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+    };
+  }, [applyRoute]);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,8 +175,11 @@ export function App() {
   useEffect(() => {
     fetchActiveModel().then((activeModel) => {
       if (activeModel) {
+        const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
         setModel(activeModel);
-        setScope(defaultScope(activeModel));
+        setScope(nextRoute.scope);
+        setSelectedSlug(nextRoute.selectedSlug);
+        setRouteIssue(nextRoute.issue);
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
@@ -126,9 +199,11 @@ export function App() {
         setStatus("Open canceled");
         return;
       }
+      const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
       setModel(result.model);
-      setScope(defaultScope(result.model));
-      setSelectedSlug(null);
+      setScope(nextRoute.scope);
+      setSelectedSlug(nextRoute.selectedSlug);
+      setRouteIssue(nextRoute.issue);
       setStatus(`Opened ${result.repo.name}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to open repository");
@@ -171,7 +246,7 @@ export function App() {
       <nav className="scopebar" aria-label="View scope">
         <button
           className={scope.level === "context" ? "scope-button active" : "scope-button"}
-          onClick={() => setScope({ level: "context" })}
+          onClick={() => navigateTo({ level: "context" })}
         >
           Context
         </button>
@@ -179,7 +254,7 @@ export function App() {
           <button
             key={system.slug}
             className={scope.level === "container" && scope.slug === system.slug ? "scope-button active" : "scope-button"}
-            onClick={() => setScope({ level: "container", slug: system.slug })}
+            onClick={() => navigateTo({ level: "container", slug: system.slug })}
           >
             {system.name}
           </button>
@@ -188,7 +263,7 @@ export function App() {
           <button
             key={container.slug}
             className={scope.level === "component" && scope.slug === container.slug ? "scope-button active" : "scope-button"}
-            onClick={() => setScope({ level: "component", slug: container.slug })}
+            onClick={() => navigateTo({ level: "component", slug: container.slug })}
           >
             {container.name}
           </button>
@@ -203,14 +278,14 @@ export function App() {
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
-            onNodeClick={(_, node) => setSelectedSlug(node.id)}
+            onNodeClick={(_, node) => selectNode(node.id)}
             onNodeDoubleClick={(_, node) => {
               const nextScope = nextScopeForDrilldown(model, scope, model.elementsBySlug[node.id]);
               if (nextScope) {
-                setScope(nextScope);
+                navigateTo(nextScope);
               }
             }}
-            onPaneClick={() => setSelectedSlug(null)}
+            onPaneClick={clearSelection}
             fitView
             minZoom={0.25}
             maxZoom={1.7}
@@ -219,6 +294,7 @@ export function App() {
             <Controls position="bottom-left" />
             <MiniMap position="bottom-right" pannable zoomable />
           </ReactFlow>
+          {routeIssue ? <RouteIssueNotice issue={routeIssue} /> : null}
         </section>
 
         <DetailPanel
@@ -227,7 +303,7 @@ export function App() {
           model={model}
           scope={scope}
           warningIssues={warningIssues}
-          onDrillDown={setScope}
+          onDrillDown={navigateTo}
         />
       </main>
 
@@ -247,6 +323,10 @@ export function App() {
       </footer>
     </div>
   );
+}
+
+function currentHashRoute(): string {
+  return typeof window === "undefined" ? "" : window.location.hash;
 }
 
 function DetailPanel({
@@ -353,6 +433,19 @@ function DetailPanel({
         </>
       )}
     </aside>
+  );
+}
+
+function RouteIssueNotice({ issue }: { issue: RouteIssue }) {
+  return (
+    <div className="route-notice" role="status">
+      <AlertTriangle size={24} aria-hidden="true" />
+      <div>
+        <strong>{issue.title}</strong>
+        <span>{issue.slug}</span>
+        <p>{issue.message}</p>
+      </div>
+    </div>
   );
 }
 

@@ -153,6 +153,7 @@ input {
 }
 
 .canvas-region {
+  position: relative;
   min-width: 0;
   min-height: 0;
 }
@@ -264,6 +265,50 @@ input {
 .react-flow__edge-text {
   fill: #44515f;
   font-size: 12px;
+}
+
+.route-notice {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  width: min(360px, calc(100% - 36px));
+  padding: 12px;
+  border: 1px solid #f0d7aa;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #344454;
+  box-shadow: 0 10px 22px rgba(31, 41, 51, 0.12);
+}
+
+.route-notice svg {
+  color: #a15c00;
+}
+
+.route-notice strong,
+.route-notice span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.route-notice strong {
+  color: #1f2933;
+  font-size: 14px;
+}
+
+.route-notice span {
+  color: #a15c00;
+  font-size: 12px;
+}
+
+.route-notice p {
+  margin: 5px 0 0;
+  color: #526170;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .detail-panel {

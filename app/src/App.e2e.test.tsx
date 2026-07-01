@@ -141,6 +141,11 @@ function mountApp(): { container: HTMLElement; cleanup: () => void } {
   };
 }
 
+function resetDomAndRoute() {
+  document.body.innerHTML = "";
+  window.location.hash = "";
+}
+
 async function flushLayout() {
   await act(async () => {
     await Promise.resolve();
@@ -179,7 +184,7 @@ function getDetailAction(container: HTMLElement, label: string): HTMLButtonEleme
 
 describe("App drill-down renderer behavior", () => {
   afterEach(() => {
-    document.body.innerHTML = "";
+    resetDomAndRoute();
   });
 
   it("double-clicks a system node to open that system's container view", async () => {
@@ -339,9 +344,81 @@ describe("App drill-down renderer behavior", () => {
   });
 });
 
+describe("App hash route behavior", () => {
+  afterEach(() => {
+    resetDomAndRoute();
+  });
+
+  it("loads a system hash route into that system's container view", async () => {
+    window.location.hash = "#/system/acme_api";
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const labels = getCanvasLabels(container);
+    expect(labels).toContain("API Server");
+    expect(labels).toContain("Event Bus");
+    expect(labels).not.toContain("Acme API");
+
+    cleanup();
+  });
+
+  it("shows a canvas not-found state for a wrong-type route slug without unloading the model", async () => {
+    window.location.hash = "#/system/customer";
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const canvasText = container.querySelector('[aria-label="Architecture canvas"]')?.textContent;
+    expect(canvasText).toContain("Route not found");
+    expect(canvasText).toContain("customer");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("1 warning");
+
+    cleanup();
+  });
+
+  it("keeps an unmatched route not-found state when the canvas is clicked", async () => {
+    window.location.hash = "#/bogus";
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const customerNode = getCanvasNode(container, "Customer");
+    expect(customerNode).not.toBeNull();
+
+    act(() => {
+      customerNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const canvasText = container.querySelector('[aria-label="Architecture canvas"]')?.textContent;
+    expect(canvasText).toContain("Route not found");
+    expect(canvasText).toContain("/bogus");
+    expect(container.querySelector("aside.detail-panel")?.textContent).not.toContain("Customer");
+    expect(window.location.hash).toBe("#/bogus");
+
+    cleanup();
+  });
+
+  it("keeps the container component view when a component route selects a non-child component", async () => {
+    window.location.hash = "#/container/event_bus/component/auth_component";
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const canvasText = container.querySelector('[aria-label="Architecture canvas"]')?.textContent;
+    expect(getCanvasLabels(container)).toContain("Event Bus");
+    expect(canvasText).toContain("Component not found");
+    expect(canvasText).toContain("auth_component");
+    expect(container.querySelector("aside.detail-panel")?.textContent).not.toContain("Authentication Component");
+
+    cleanup();
+  });
+});
+
 describe("App validation warning surface", () => {
   afterEach(() => {
-    document.body.innerHTML = "";
+    resetDomAndRoute();
   });
 
   it("surfaces validation warnings without blocking the canvas", async () => {
