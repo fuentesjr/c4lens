@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BaseElement, CommandError, EffectiveModel, ElementNode, ElementType, Lifecycle, Model,
-    Relationship, RepoHandle, SourceKind, ValidationIssue, ValidationReport, ValidationSeverity,
-    ValidationStage,
+    BaseElement, CommandError, Container, EffectiveModel, ElementNode, ElementType, Lifecycle,
+    Model, Relationship, RepoHandle, SourceKind, System, ValidationIssue, ValidationReport,
+    ValidationSeverity, ValidationStage,
 };
+
+const AUTHORED_MODEL_PATH: &str = "c4/model.yml";
+const GENERATED_MODEL_PATH: &str = "c4/model.generated.yml";
 
 pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel, CommandError> {
     let repo_root = Path::new(&repo.root_path).canonicalize().map_err(|error| {
@@ -18,24 +21,21 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let model_file = select_model_file(&repo_root)?;
-
-    let contents = fs::read_to_string(&model_file.path).map_err(|error| {
-        CommandError::with_details(
-            "model.invalid",
-            format!("Failed to read {}.", model_file.relative_path),
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    let value = parse_plain_yaml_value(&contents, model_file.relative_path)?;
-    let mut model: Model = serde_yaml_ng::from_value(value).map_err(|error| {
-        CommandError::with_details(
-            "model.invalid",
-            format!("Failed to parse {}.", model_file.relative_path),
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    normalize_model(&mut model, model_file.generated);
+    let model_inputs = load_model_inputs(&repo_root)?;
+    let source_sha = stable_source_sha(&model_inputs.source_parts());
+    let authored_path = model_inputs
+        .authored
+        .as_ref()
+        .map(|source| source.relative_path.to_string());
+    let generated_path = model_inputs
+        .generated
+        .as_ref()
+        .map(|source| source.relative_path.to_string());
+    let element_sources = element_source_map(
+        model_inputs.authored.as_ref().map(|source| &source.model),
+        model_inputs.generated.as_ref().map(|source| &source.model),
+    );
+    let mut model = merge_model_inputs(model_inputs);
 
     let (indexed_relationships, mut issues) = deduplicate_relationships(&model.relationships);
     let relationships = indexed_relationships
@@ -43,17 +43,16 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
         .map(|indexed| indexed.relationship.clone())
         .collect::<Vec<_>>();
     model.relationships = relationships.clone();
-    let elements_by_slug = flatten_elements(&model, model_file.source_kind)?;
+    let elements_by_slug = flatten_elements(&model, &element_sources)?;
     validate_relationships(&indexed_relationships, &elements_by_slug)?;
     issues.extend(validate_external_system_containers(&model));
     issues.extend(validate_code_paths(&repo_root, &elements_by_slug)?);
-    let source_sha = stable_source_sha(&contents);
 
     Ok(EffectiveModel {
         repo,
         source_sha: source_sha.clone(),
-        authored_path: model_file.authored_path.map(str::to_string),
-        generated_path: model_file.generated_path.map(str::to_string),
+        authored_path,
+        generated_path,
         model,
         elements_by_slug,
         relationships,
@@ -65,39 +64,38 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     })
 }
 
-struct ModelFile {
-    path: PathBuf,
+struct ModelSource {
     relative_path: &'static str,
-    generated: bool,
-    source_kind: SourceKind,
-    authored_path: Option<&'static str>,
-    generated_path: Option<&'static str>,
+    contents: String,
+    model: Model,
 }
 
-fn select_model_file(repo_root: &Path) -> Result<ModelFile, CommandError> {
-    let authored_relative_path = "c4/model.yml";
-    let authored_path = repo_root.join(authored_relative_path);
-    if control_file_is_present(&authored_path)? {
-        return Ok(ModelFile {
-            path: resolve_control_file(repo_root, &authored_path, authored_relative_path)?,
-            relative_path: authored_relative_path,
-            generated: false,
-            source_kind: SourceKind::Authored,
-            authored_path: Some(authored_relative_path),
-            generated_path: None,
-        });
-    }
+struct ModelInputs {
+    authored: Option<ModelSource>,
+    generated: Option<ModelSource>,
+}
 
-    let generated_relative_path = "c4/model.generated.yml";
-    let generated_path = repo_root.join(generated_relative_path);
-    if control_file_is_present(&generated_path)? {
-        return Ok(ModelFile {
-            path: resolve_control_file(repo_root, &generated_path, generated_relative_path)?,
-            relative_path: generated_relative_path,
-            generated: true,
-            source_kind: SourceKind::Generated,
-            authored_path: None,
-            generated_path: Some(generated_relative_path),
+impl ModelInputs {
+    fn source_parts(&self) -> Vec<(&'static str, &str)> {
+        let mut parts = Vec::new();
+        if let Some(authored) = &self.authored {
+            parts.push((authored.relative_path, authored.contents.as_str()));
+        }
+        if let Some(generated) = &self.generated {
+            parts.push((generated.relative_path, generated.contents.as_str()));
+        }
+        parts
+    }
+}
+
+fn load_model_inputs(repo_root: &Path) -> Result<ModelInputs, CommandError> {
+    let authored = load_optional_model_source(repo_root, AUTHORED_MODEL_PATH, false)?;
+    let generated = load_optional_model_source(repo_root, GENERATED_MODEL_PATH, true)?;
+
+    if authored.is_some() || generated.is_some() {
+        return Ok(ModelInputs {
+            authored,
+            generated,
         });
     }
 
@@ -105,6 +103,41 @@ fn select_model_file(repo_root: &Path) -> Result<ModelFile, CommandError> {
         "model.not_found",
         "No c4/model.yml exists in this repository, and no c4/model.generated.yml exists.",
     ))
+}
+
+fn load_optional_model_source(
+    repo_root: &Path,
+    relative_path: &'static str,
+    generated: bool,
+) -> Result<Option<ModelSource>, CommandError> {
+    let path = repo_root.join(relative_path);
+    if !control_file_is_present(&path)? {
+        return Ok(None);
+    }
+
+    let resolved_path = resolve_control_file(repo_root, &path, relative_path)?;
+    let contents = fs::read_to_string(&resolved_path).map_err(|error| {
+        CommandError::with_details(
+            "model.invalid",
+            format!("Failed to read {relative_path}."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let value = parse_plain_yaml_value(&contents, relative_path)?;
+    let mut model: Model = serde_yaml_ng::from_value(value).map_err(|error| {
+        CommandError::with_details(
+            "model.invalid",
+            format!("Failed to parse {relative_path}."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    normalize_model(&mut model, generated);
+
+    Ok(Some(ModelSource {
+        relative_path,
+        contents,
+        model,
+    }))
 }
 
 fn control_file_is_present(path: &Path) -> Result<bool, CommandError> {
@@ -141,6 +174,61 @@ fn resolve_control_file(
     Ok(resolved_path)
 }
 
+fn merge_model_inputs(inputs: ModelInputs) -> Model {
+    match (inputs.generated, inputs.authored) {
+        (Some(generated), Some(authored)) => merge_models(generated.model, authored.model),
+        (Some(generated), None) => generated.model,
+        (None, Some(authored)) => authored.model,
+        (None, None) => unreachable!("model inputs are checked before merge"),
+    }
+}
+
+fn merge_models(mut generated: Model, authored: Model) -> Model {
+    generated.name = authored.name;
+    generated.description = authored.description.or(generated.description);
+    generated.generated = false;
+
+    for (slug, actor) in authored.actors {
+        generated.actors.insert(slug, actor);
+    }
+
+    for (slug, authored_system) in authored.systems {
+        let system = if let Some(generated_system) = generated.systems.remove(&slug) {
+            merge_system(generated_system, authored_system)
+        } else {
+            authored_system
+        };
+        generated.systems.insert(slug, system);
+    }
+
+    generated.relationships.extend(authored.relationships);
+    generated
+}
+
+fn merge_system(mut generated: System, authored: System) -> System {
+    let mut containers = std::mem::take(&mut generated.containers);
+    let mut system = authored;
+
+    for (slug, authored_container) in std::mem::take(&mut system.containers) {
+        let container = if let Some(generated_container) = containers.remove(&slug) {
+            merge_container(generated_container, authored_container)
+        } else {
+            authored_container
+        };
+        containers.insert(slug, container);
+    }
+
+    system.containers = containers;
+    system
+}
+
+fn merge_container(mut generated: Container, mut authored: Container) -> Container {
+    let mut components = std::mem::take(&mut generated.components);
+    components.extend(std::mem::take(&mut authored.components));
+    authored.components = components;
+    authored
+}
+
 fn normalize_model(model: &mut Model, generated: bool) {
     model.generated = generated;
 
@@ -169,7 +257,7 @@ fn normalize_model(model: &mut Model, generated: bool) {
 
 fn flatten_elements(
     model: &Model,
-    source_kind: SourceKind,
+    source_by_slug: &BTreeMap<String, SourceKind>,
 ) -> Result<BTreeMap<String, ElementNode>, CommandError> {
     let mut output = BTreeMap::new();
     let mut paths_by_slug = BTreeMap::new();
@@ -188,7 +276,7 @@ fn flatten_elements(
                 container_slug: None,
                 external: None,
                 kind: None,
-                source: source_kind.clone(),
+                source: source_for_slug(source_by_slug, slug),
             },
         )?;
     }
@@ -207,7 +295,7 @@ fn flatten_elements(
                 container_slug: None,
                 external: Some(system.external),
                 kind: None,
-                source: source_kind.clone(),
+                source: source_for_slug(source_by_slug, system_slug),
             },
         )?;
 
@@ -225,7 +313,7 @@ fn flatten_elements(
                     container_slug: None,
                     external: Some(system.external),
                     kind: Some(container.kind.clone()),
-                    source: source_kind.clone(),
+                    source: source_for_slug(source_by_slug, container_slug),
                 },
             )?;
 
@@ -245,7 +333,7 @@ fn flatten_elements(
                         container_slug: Some(container_slug.clone()),
                         external: Some(system.external),
                         kind: None,
-                        source: source_kind.clone(),
+                        source: source_for_slug(source_by_slug, component_slug),
                     },
                 )?;
             }
@@ -253,6 +341,92 @@ fn flatten_elements(
     }
 
     Ok(output)
+}
+
+#[derive(PartialEq, Eq)]
+struct ElementIdentity {
+    element_type: ElementType,
+    parent_slug: Option<String>,
+}
+
+fn element_source_map(
+    authored: Option<&Model>,
+    generated: Option<&Model>,
+) -> BTreeMap<String, SourceKind> {
+    let authored_elements = authored.map(collect_element_identities).unwrap_or_default();
+    let generated_elements = generated
+        .map(collect_element_identities)
+        .unwrap_or_default();
+    let mut output = BTreeMap::new();
+
+    for slug in generated_elements.keys().chain(authored_elements.keys()) {
+        let source = match (authored_elements.get(slug), generated_elements.get(slug)) {
+            (Some(authored_identity), Some(generated_identity))
+                if authored_identity == generated_identity =>
+            {
+                SourceKind::Merged
+            }
+            (Some(_), _) => SourceKind::Authored,
+            (None, Some(_)) => SourceKind::Generated,
+            (None, None) => continue,
+        };
+        output.insert(slug.clone(), source);
+    }
+
+    output
+}
+
+fn collect_element_identities(model: &Model) -> BTreeMap<String, ElementIdentity> {
+    let mut output = BTreeMap::new();
+
+    for slug in model.actors.keys() {
+        output.insert(
+            slug.clone(),
+            ElementIdentity {
+                element_type: ElementType::Actor,
+                parent_slug: None,
+            },
+        );
+    }
+
+    for (system_slug, system) in &model.systems {
+        output.insert(
+            system_slug.clone(),
+            ElementIdentity {
+                element_type: ElementType::System,
+                parent_slug: None,
+            },
+        );
+
+        for (container_slug, container) in &system.containers {
+            output.insert(
+                container_slug.clone(),
+                ElementIdentity {
+                    element_type: ElementType::Container,
+                    parent_slug: Some(system_slug.clone()),
+                },
+            );
+
+            for component_slug in container.components.keys() {
+                output.insert(
+                    component_slug.clone(),
+                    ElementIdentity {
+                        element_type: ElementType::Component,
+                        parent_slug: Some(container_slug.clone()),
+                    },
+                );
+            }
+        }
+    }
+
+    output
+}
+
+fn source_for_slug(source_by_slug: &BTreeMap<String, SourceKind>, slug: &str) -> SourceKind {
+    source_by_slug
+        .get(slug)
+        .cloned()
+        .unwrap_or(SourceKind::Merged)
 }
 
 fn insert_flattened_element(
@@ -323,26 +497,33 @@ fn validate_relationships(
 fn deduplicate_relationships(
     relationships: &[Relationship],
 ) -> (Vec<IndexedRelationship>, Vec<ValidationIssue>) {
-    let mut unique_relationships = Vec::with_capacity(relationships.len());
-    let mut seen_by_identity = BTreeMap::new();
+    let mut unique_relationships: Vec<IndexedRelationship> =
+        Vec::with_capacity(relationships.len());
+    let mut seen_by_identity: BTreeMap<RelationshipIdentity, (usize, usize)> = BTreeMap::new();
     let mut issues = Vec::new();
 
     for (index, relationship) in relationships.iter().enumerate() {
         let identity = relationship_identity(relationship);
-        if let Some(first_index) = seen_by_identity.get(&identity) {
-            issues.push(ValidationIssue {
-                severity: ValidationSeverity::Warning,
-                stage: ValidationStage::Semantic,
-                code: "semantic.duplicate_relationship".to_string(),
-                message: format!(
-                    "Relationship duplicates /relationships/{first_index} and was ignored."
-                ),
-                path: Some(format!("/relationships/{index}")),
-                line: None,
-                column: None,
-            });
+        if let Some((first_index, unique_index)) = seen_by_identity.get(&identity).copied() {
+            let first_relationship = &mut unique_relationships[unique_index].relationship;
+            if first_relationship.generated && !relationship.generated {
+                first_relationship.generated = false;
+            } else if !first_relationship.generated && !relationship.generated {
+                issues.push(ValidationIssue {
+                    severity: ValidationSeverity::Warning,
+                    stage: ValidationStage::Semantic,
+                    code: "semantic.duplicate_relationship".to_string(),
+                    message: format!(
+                        "Relationship duplicates /relationships/{first_index} and was ignored."
+                    ),
+                    path: Some(format!("/relationships/{index}")),
+                    line: None,
+                    column: None,
+                });
+            }
         } else {
-            seen_by_identity.insert(identity, index);
+            let unique_index = unique_relationships.len();
+            seen_by_identity.insert(identity, (index, unique_index));
             unique_relationships.push(IndexedRelationship {
                 authored_index: index,
                 relationship: relationship.clone(),
@@ -556,8 +737,15 @@ fn base_with_slug(base: &BaseElement, slug: &str) -> BaseElement {
     base
 }
 
-fn stable_source_sha(contents: &str) -> String {
-    format!("{:x}", Sha256::digest(contents.as_bytes()))
+fn stable_source_sha(parts: &[(&str, &str)]) -> String {
+    let mut digest = Sha256::new();
+    for (path, contents) in parts {
+        digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(contents.as_bytes());
+        digest.update([0]);
+    }
+    format!("{:x}", digest.finalize())
 }
 
 fn parse_plain_yaml_value(
@@ -1829,18 +2017,161 @@ relationships:
     }
 
     #[test]
-    fn prefers_authored_model_when_authored_and_generated_models_exist() {
+    fn merges_authored_model_over_generated_overlay_recursively() {
         let root = fresh_test_dir("authored-and-generated-models");
+        write_model(
+            &root,
+            r#"
+name: Authored Model
+description: Human maintained description.
+actors:
+  customer:
+    name: Authored Customer
+systems:
+  acme:
+    name: Authored Acme
+    tech: Rust
+    containers:
+      api:
+        name: Authored API
+        kind: service
+        components:
+          auth:
+            name: Authored Auth
+relationships:
+  - from: customer
+    to: api
+    description: Uses
+  - from: auth
+    to: billing
+    description: Sends invoices
+"#,
+        );
+        write_generated_model(
+            &root,
+            r#"
+name: Generated Model
+description: Machine generated description.
+actors:
+  customer:
+    name: Generated Customer
+systems:
+  acme:
+    name: Generated Acme
+    tech: TypeScript
+    containers:
+      api:
+        name: Generated API
+        kind: app
+        components:
+          generated_worker:
+            name: Generated Worker
+      billing:
+        name: Generated Billing
+  payments:
+    name: Payments
+    external: true
+relationships:
+  - from: customer
+    to: api
+    description: Uses
+  - from: api
+    to: generated_worker
+    description: Calls
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("merged model");
+
+        assert_eq!(effective.model.name, "Authored Model");
+        assert_eq!(
+            effective.model.description.as_deref(),
+            Some("Human maintained description.")
+        );
+        assert_eq!(effective.authored_path.as_deref(), Some("c4/model.yml"));
+        assert_eq!(
+            effective.generated_path.as_deref(),
+            Some("c4/model.generated.yml")
+        );
+        assert!(!effective.model.generated);
+        assert!(effective.validation.issues.is_empty());
+
+        let acme = &effective.model.systems["acme"];
+        assert_eq!(acme.base.name, "Authored Acme");
+        assert_eq!(acme.base.tech.as_deref(), Some("Rust"));
+        assert!(!acme.base.generated);
+        assert!(acme.containers.contains_key("billing"));
+
+        let api = &acme.containers["api"];
+        assert_eq!(api.base.name, "Authored API");
+        assert_eq!(api.kind, crate::ContainerKind::Service);
+        assert!(!api.base.generated);
+        assert!(api.components.contains_key("auth"));
+        assert!(api.components.contains_key("generated_worker"));
+        assert!(api.components["generated_worker"].base.generated);
+
+        assert_eq!(
+            effective.elements_by_slug["api"].source,
+            crate::SourceKind::Merged
+        );
+        assert_eq!(
+            effective.elements_by_slug["billing"].source,
+            crate::SourceKind::Generated
+        );
+        assert_eq!(
+            effective.elements_by_slug["auth"].source,
+            crate::SourceKind::Authored
+        );
+        assert_eq!(
+            effective.elements_by_slug["payments"].source,
+            crate::SourceKind::Generated
+        );
+
+        assert_eq!(effective.relationships.len(), 3);
+        assert!(effective
+            .relationships
+            .iter()
+            .any(|relationship| relationship.from == "api"
+                && relationship.to == "generated_worker"
+                && relationship.generated));
+        assert!(effective
+            .relationships
+            .iter()
+            .any(|relationship| relationship.from == "auth"
+                && relationship.to == "billing"
+                && !relationship.generated));
+        assert!(effective
+            .relationships
+            .iter()
+            .any(|relationship| relationship.from == "customer"
+                && relationship.to == "api"
+                && !relationship.generated));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn generated_overlay_contents_contribute_to_merged_source_sha() {
+        let root = fresh_test_dir("merged-source-sha");
         write_model(&root, "name: Authored Model\n");
         write_generated_model(&root, "name: Generated Model\n");
 
         let repo = repo_handle_from_path(&root).expect("repo handle");
-        let effective = load_effective_model_from_repo(repo).expect("authored model");
+        let first = load_effective_model_from_repo(repo.clone()).expect("first merged model");
 
-        assert_eq!(effective.model.name, "Authored Model");
-        assert_eq!(effective.authored_path.as_deref(), Some("c4/model.yml"));
-        assert_eq!(effective.generated_path, None);
-        assert!(!effective.model.generated);
+        write_generated_model(
+            &root,
+            r#"
+name: Generated Model
+systems:
+  generated_system:
+    name: Generated System
+"#,
+        );
+        let second = load_effective_model_from_repo(repo).expect("second merged model");
+
+        assert_ne!(first.source_sha, second.source_sha);
 
         cleanup(root);
     }

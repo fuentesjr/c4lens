@@ -72,6 +72,50 @@ systems:
 }
 
 #[test]
+fn validate_json_succeeds_for_authored_model_with_generated_overlay() {
+    let repo = fresh_test_dir("authored-generated-json");
+    write_model(
+        &repo,
+        r#"
+name: Authored With Generated Overlay
+actors:
+  customer:
+    name: Customer
+relationships:
+  - from: customer
+    to: generated_api
+    description: Uses
+"#,
+    );
+    write_generated_model(
+        &repo,
+        r#"
+name: Generated Overlay
+systems:
+  generated_system:
+    name: Generated System
+    containers:
+      generated_api:
+        name: Generated API
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["issues"].as_array().expect("issues array").len(), 0);
+
+    cleanup(repo);
+}
+
+#[test]
 fn validate_fails_when_authored_model_is_missing() {
     let repo = fresh_test_dir("missing-model");
     fs::create_dir(repo.join("c4")).expect("create c4 dir");
