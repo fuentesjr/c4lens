@@ -65,6 +65,7 @@ pub fn load_effective_model_from_repo(repo: RepoHandle) -> Result<EffectiveModel
     model.relationships = relationships.clone();
     let elements_by_slug = flatten_elements(&model)?;
     validate_relationships(&indexed_relationships, &elements_by_slug)?;
+    issues.extend(validate_external_system_containers(&model));
     issues.extend(validate_code_paths(&repo_root, &elements_by_slug)?);
     let source_sha = stable_source_sha(&contents);
 
@@ -309,6 +310,25 @@ fn lifecycle_identity(status: &Lifecycle) -> &'static str {
         Lifecycle::Planned => "planned",
         Lifecycle::Deprecated => "deprecated",
     }
+}
+
+fn validate_external_system_containers(model: &Model) -> Vec<ValidationIssue> {
+    model
+        .systems
+        .iter()
+        .filter(|(_, system)| system.external && !system.containers.is_empty())
+        .map(|(slug, _)| ValidationIssue {
+            severity: ValidationSeverity::Warning,
+            stage: ValidationStage::Semantic,
+            code: "semantic.external_system_has_containers".to_string(),
+            message:
+                "External system defines containers; they are retained but may not be drillable."
+                    .to_string(),
+            path: Some(format!("/systems/{slug}/containers")),
+            line: None,
+            column: None,
+        })
+        .collect()
 }
 
 fn validate_code_paths(
@@ -2713,6 +2733,41 @@ relationships:
 
         assert_eq!(error.code, "semantic.unresolved_relationship_target");
         assert_eq!(details["path"], "/relationships/2/to");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn warns_when_external_system_defines_containers() {
+        let root = fresh_test_dir("external-system-containers");
+        write_model(
+            &root,
+            r#"
+name: External System Containers
+systems:
+  payments:
+    name: Payments
+    external: true
+    containers:
+      api:
+        name: Payments API
+"#,
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("external containers warn");
+
+        assert!(effective.validation.ok);
+        assert!(effective.elements_by_slug.contains_key("api"));
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(
+            effective.validation.issues[0].code,
+            "semantic.external_system_has_containers"
+        );
+        assert_eq!(
+            effective.validation.issues[0].path.as_deref(),
+            Some("/systems/payments/containers")
+        );
 
         cleanup(root);
     }

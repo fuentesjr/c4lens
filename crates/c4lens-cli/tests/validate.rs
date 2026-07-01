@@ -372,6 +372,49 @@ relationships:
     cleanup(repo);
 }
 
+#[test]
+fn validate_json_outputs_warning_for_external_system_containers() {
+    let repo = fresh_test_dir("external-system-containers-json");
+    write_model(
+        &repo,
+        r#"
+name: External Containers
+systems:
+  payments:
+    name: Payments
+    external: true
+    containers:
+      api:
+        name: Payments API
+"#,
+    );
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["validate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["issues"].as_array().expect("issues array").len(), 1);
+    assert_eq!(report["issues"][0]["severity"], "warning");
+    assert_eq!(report["issues"][0]["stage"], "semantic");
+    assert_eq!(
+        report["issues"][0]["code"],
+        "semantic.external_system_has_containers"
+    );
+    assert_eq!(
+        report["issues"][0]["message"],
+        "External system defines containers; they are retained but may not be drillable."
+    );
+    assert_eq!(report["issues"][0]["path"], "/systems/payments/containers");
+
+    cleanup(repo);
+}
+
 fn write_model(repo: &PathBuf, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");
