@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { EffectiveModel, RepoHandle, ValidationReport } from "../model/types";
+import type { EffectiveModel, RepoHandle, ScanSummary, ValidationReport } from "../model/types";
 
 export interface OpenRepoResult {
   repo: RepoHandle;
@@ -19,9 +19,15 @@ export interface ValidationFailedPayload {
   validation: ValidationReport;
 }
 
+export interface IndexUpdatedPayload {
+  repoId: string;
+  summary: ScanSummary;
+}
+
 export interface ModelEventHandlers {
   onModelChanged: (payload: ModelChangedPayload) => void | Promise<void>;
   onValidationFailed: (payload: ValidationFailedPayload) => void | Promise<void>;
+  onIndexUpdated?: (payload: IndexUpdatedPayload) => void | Promise<void>;
 }
 
 export function isTauriDesktop(): boolean {
@@ -65,6 +71,14 @@ export async function fetchActiveModel(): Promise<EffectiveModel | null> {
   }
 }
 
+export async function scanCodebase(params: { force?: boolean } = {}): Promise<ScanSummary> {
+  if (!isTauriDesktop()) {
+    throw new Error("Scan is available in the Tauri desktop shell");
+  }
+
+  return await invoke<ScanSummary>("scan_codebase", { params });
+}
+
 export async function listenToModelEvents(handlers: ModelEventHandlers): Promise<UnlistenFn> {
   if (!isTauriDesktop()) {
     return () => {};
@@ -76,9 +90,13 @@ export async function listenToModelEvents(handlers: ModelEventHandlers): Promise
   const unlistenValidationFailed = await listen<ValidationFailedPayload>("validation-failed", (event) => {
     void handlers.onValidationFailed(event.payload);
   });
+  const unlistenIndexUpdated = await listen<IndexUpdatedPayload>("index-updated", (event) => {
+    void handlers.onIndexUpdated?.(event.payload);
+  });
 
   return () => {
     unlistenModelChanged();
     unlistenValidationFailed();
+    unlistenIndexUpdated();
   };
 }

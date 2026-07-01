@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ValidationReport } from "./model/types";
+import type { EffectiveModel, ScanSummary, ValidationReport } from "./model/types";
 
 type MockFlowNode = {
   id: string;
@@ -36,6 +36,7 @@ const ipcMocks = vi.hoisted(() => {
     handlers: null as null | {
       onModelChanged: (payload: { repoId: string; sourceSha: string }) => void | Promise<void>;
       onValidationFailed: (payload: { repoId: string; validation: unknown }) => void | Promise<void>;
+      onIndexUpdated?: (payload: { repoId: string; summary: ScanSummary }) => void | Promise<void>;
     },
     unlisten: vi.fn(),
   };
@@ -51,6 +52,7 @@ const ipcMocks = vi.hoisted(() => {
     openRepositoryFromDialog: vi.fn<
       () => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null } | null>
     >(async () => null),
+    scanCodebase: vi.fn<() => Promise<ScanSummary>>(async () => scanSummaryFor()),
   };
 });
 
@@ -59,6 +61,7 @@ vi.mock("./ipc/client", () => ({
   isTauriDesktop: ipcMocks.isTauriDesktop,
   listenToModelEvents: ipcMocks.listenToModelEvents,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
+  scanCodebase: ipcMocks.scanCodebase,
 }));
 
 vi.mock("./model/sample", async () => {
@@ -183,6 +186,8 @@ function resetDomAndRoute() {
   ipcMocks.listenToModelEvents.mockClear();
   ipcMocks.openRepositoryFromDialog.mockReset();
   ipcMocks.openRepositoryFromDialog.mockResolvedValue(null);
+  ipcMocks.scanCodebase.mockReset();
+  ipcMocks.scanCodebase.mockResolvedValue(scanSummaryFor());
   ipcMocks.state.handlers = null;
   ipcMocks.state.unlisten.mockClear();
 }
@@ -586,6 +591,298 @@ describe("App model event behavior", () => {
 
     cleanup();
   });
+
+  it("ignores stale model-changed refetch results after the active repo changes", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    let resolveFetch: (model: EffectiveModel) => void = () => {};
+    ipcMocks.fetchActiveModel.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    const nextRepo = {
+      id: "next-repo",
+      rootPath: "/tmp/next-repo",
+      name: "Next Repo",
+    };
+    ipcMocks.openRepositoryFromDialog.mockResolvedValueOnce({
+      repo: nextRepo,
+      model: effectiveModelWithName("Next Repo Architecture", nextRepo.id),
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(ipcMocks.state.handlers).not.toBeNull();
+    let modelChangedPromise: void | Promise<void>;
+    await act(async () => {
+      modelChangedPromise = ipcMocks.state.handlers!.onModelChanged({
+        repoId: sampleModel.repo.id,
+        sourceSha: "stale-source-sha",
+      });
+      await Promise.resolve();
+    });
+
+    const openButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Open Folder",
+    );
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      openButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      resolveFetch(effectiveModelWithName("Stale Repo Architecture", sampleModel.repo.id));
+      await modelChangedPromise;
+    });
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Next Repo Architecture");
+    expect(container.querySelector("aside.detail-panel")?.textContent).not.toContain("Stale Repo Architecture");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened Next Repo");
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain("Model updated");
+
+    cleanup();
+  });
+});
+
+describe("App scan behavior", () => {
+  afterEach(() => {
+    resetDomAndRoute();
+  });
+
+  it("runs a desktop codebase scan and displays the scan counts", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.scanCodebase.mockResolvedValueOnce(
+      scanSummaryFor({
+        scannedFiles: 7,
+        changedFiles: 2,
+        deletedFiles: 1,
+      }),
+    );
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const scanButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Scan",
+    );
+    expect(scanButton).not.toBeNull();
+
+    await act(async () => {
+      scanButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.scanCodebase).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Scanned 7 files");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("2 changed");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("1 deleted");
+
+    cleanup();
+  });
+
+  it("surfaces scan failures without unloading the current canvas", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.scanCodebase.mockRejectedValueOnce(new Error("scan failed"));
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+    const labelsBeforeFailure = getCanvasLabels(container);
+
+    const scanButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Scan",
+    );
+    expect(scanButton).not.toBeNull();
+
+    await act(async () => {
+      scanButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(getCanvasLabels(container)).toEqual(labelsBeforeFailure);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("scan failed");
+
+    cleanup();
+  });
+
+  it("shows structured command error messages from scan failures", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.scanCodebase.mockRejectedValueOnce({
+      code: "repo.not_open",
+      message: "No repository is open.",
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const scanButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Scan",
+    );
+    expect(scanButton).not.toBeNull();
+
+    await act(async () => {
+      scanButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("No repository is open.");
+
+    cleanup();
+  });
+
+  it("ignores a direct scan response after the active repo changes", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    let resolveScan: (summary: ScanSummary) => void = () => {};
+    ipcMocks.scanCodebase.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveScan = resolve;
+      }),
+    );
+    const nextRepo = {
+      id: "next-repo",
+      rootPath: "/tmp/next-repo",
+      name: "Next Repo",
+    };
+    ipcMocks.openRepositoryFromDialog.mockResolvedValueOnce({
+      repo: nextRepo,
+      model: effectiveModelWithName("Next Repo Architecture", nextRepo.id),
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const scanButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Scan",
+    );
+    const openButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Open Folder",
+    );
+    expect(scanButton).not.toBeNull();
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      scanButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      openButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      resolveScan(
+        scanSummaryFor({
+          scannedFiles: 99,
+          changedFiles: 88,
+          deletedFiles: 77,
+        }),
+      );
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened Next Repo");
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain("99 files");
+
+    cleanup();
+  });
+
+  it("updates scan status after an index-updated event for the active repo", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(ipcMocks.state.handlers?.onIndexUpdated).toBeTypeOf("function");
+    await act(async () => {
+      await ipcMocks.state.handlers!.onIndexUpdated?.({
+        repoId: sampleModel.repo.id,
+        summary: scanSummaryFor({
+          scannedFiles: 11,
+          changedFiles: 4,
+          deletedFiles: 2,
+        }),
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Index updated: 11 files");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("4 changed");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("2 deleted");
+
+    cleanup();
+  });
+
+  it("ignores index-updated events for another repo", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+    const statusBeforeEvent = container.querySelector(".statusbar")?.textContent;
+
+    await act(async () => {
+      await ipcMocks.state.handlers?.onIndexUpdated?.({
+        repoId: "another-repo",
+        summary: scanSummaryFor({
+          repo: {
+            ...sampleModel.repo,
+            id: "another-repo",
+          },
+          scannedFiles: 99,
+          changedFiles: 88,
+          deletedFiles: 77,
+        }),
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toBe(statusBeforeEvent);
+
+    cleanup();
+  });
+
+  it("ignores old-repo index events during a repo switch before rerender", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    const nextRepo = {
+      id: "next-repo",
+      rootPath: "/tmp/next-repo",
+      name: "Next Repo",
+    };
+    ipcMocks.openRepositoryFromDialog.mockResolvedValueOnce({
+      repo: nextRepo,
+      model: effectiveModelWithName("Next Repo Architecture", nextRepo.id),
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const openButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Open Folder",
+    );
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      openButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await ipcMocks.state.handlers?.onIndexUpdated?.({
+        repoId: sampleModel.repo.id,
+        summary: scanSummaryFor({
+          scannedFiles: 99,
+          changedFiles: 88,
+          deletedFiles: 77,
+        }),
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened Next Repo");
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain("99 files");
+
+    cleanup();
+  });
 });
 
 function effectiveModelWithName(name: string, repoId = sampleModel.repo.id): EffectiveModel {
@@ -606,6 +903,21 @@ function effectiveModelWithName(name: string, repoId = sampleModel.repo.id): Eff
       sourceSha: "changed-source-sha",
       issues: [],
     },
+  };
+}
+
+function scanSummaryFor(overrides: Partial<ScanSummary> = {}): ScanSummary {
+  return {
+    repo: sampleModel.repo,
+    scanToken: "scan-token",
+    scannedFiles: 3,
+    changedFiles: 1,
+    deletedFiles: 0,
+    symbols: 0,
+    imports: 0,
+    durationMs: 12,
+    warnings: [],
+    ...overrides,
   };
 }
 

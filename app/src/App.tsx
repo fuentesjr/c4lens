@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -24,10 +24,10 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { fetchActiveModel, isTauriDesktop, listenToModelEvents, openRepositoryFromDialog } from "./ipc/client";
+import { fetchActiveModel, isTauriDesktop, listenToModelEvents, openRepositoryFromDialog, scanCodebase } from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
-import type { EffectiveModel, ElementNode, ValidationIssue, ValidationReport } from "./model/types";
+import type { EffectiveModel, ElementNode, ScanSummary, ValidationIssue, ValidationReport } from "./model/types";
 import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
   availableContainers,
@@ -51,9 +51,11 @@ export function App() {
   const [validationOverride, setValidationOverride] = useState<ValidationReport | null>(null);
   const [status, setStatus] = useState("Sample model ready");
   const [isOpening, setIsOpening] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
   const [nodes, setNodes, onNodesChange] = useNodesState<C4FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const activeRepoIdRef = useRef(activeRepoId);
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
@@ -82,6 +84,11 @@ export function App() {
     },
     [model],
   );
+
+  const updateActiveRepoId = useCallback((repoId: string) => {
+    activeRepoIdRef.current = repoId;
+    setActiveRepoId(repoId);
+  }, []);
 
   const navigateTo = useCallback(
     (nextScope: ViewScope, nextSelectedSlug: string | null = null) => {
@@ -129,6 +136,10 @@ export function App() {
 
     setSelectedSlug(null);
   }, [navigateTo, routeIssue?.kind, scope, selectedSlug]);
+
+  useEffect(() => {
+    activeRepoIdRef.current = activeRepoId;
+  }, [activeRepoId]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -184,7 +195,7 @@ export function App() {
       if (activeModel) {
         const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
         setModel(activeModel);
-        setActiveRepoId(activeModel.repo.id);
+        updateActiveRepoId(activeModel.repo.id);
         setScope(nextRoute.scope);
         setSelectedSlug(nextRoute.selectedSlug);
         setRouteIssue(nextRoute.issue);
@@ -192,7 +203,7 @@ export function App() {
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
-  }, []);
+  }, [updateActiveRepoId]);
 
   useEffect(() => {
     let disposed = false;
@@ -200,18 +211,19 @@ export function App() {
 
     listenToModelEvents({
       onModelChanged: async (payload) => {
-        if (payload.repoId !== activeRepoId) {
+        const eventRepoId = payload.repoId;
+        if (eventRepoId !== activeRepoIdRef.current) {
           return;
         }
 
         const activeModel = await fetchActiveModel();
-        if (!activeModel || disposed) {
+        if (!activeModel || disposed || activeRepoIdRef.current !== eventRepoId || activeModel.repo.id !== eventRepoId) {
           return;
         }
 
         const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
         setModel(activeModel);
-        setActiveRepoId(activeModel.repo.id);
+        updateActiveRepoId(activeModel.repo.id);
         setScope(nextRoute.scope);
         setSelectedSlug(nextRoute.selectedSlug);
         setRouteIssue(nextRoute.issue);
@@ -219,12 +231,19 @@ export function App() {
         setStatus("Model updated");
       },
       onValidationFailed: (payload) => {
-        if (payload.repoId !== activeRepoId) {
+        if (payload.repoId !== activeRepoIdRef.current) {
           return;
         }
 
         setValidationOverride(payload.validation);
         setStatus("Model validation failed");
+      },
+      onIndexUpdated: (payload) => {
+        if (payload.repoId !== activeRepoIdRef.current) {
+          return;
+        }
+
+        setStatus(`Index updated: ${scanSummaryStatus(payload.summary)}`);
       },
     }).then((cleanup) => {
       if (disposed) {
@@ -238,7 +257,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [activeRepoId]);
+  }, [updateActiveRepoId]);
 
   const openRepo = useCallback(async () => {
     if (!isTauriDesktop()) {
@@ -254,7 +273,7 @@ export function App() {
         setStatus("Open canceled");
         return;
       }
-      setActiveRepoId(result.repo.id);
+      updateActiveRepoId(result.repo.id);
       if (result.model) {
         const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
         setModel(result.model);
@@ -284,6 +303,29 @@ export function App() {
     } finally {
       setIsOpening(false);
     }
+  }, [updateActiveRepoId]);
+
+  const runScan = useCallback(async () => {
+    if (!isTauriDesktop()) {
+      setStatus("Scan is available in the Tauri desktop shell");
+      return;
+    }
+
+    setIsScanning(true);
+    setStatus("Scanning codebase");
+    const scanRepoId = activeRepoIdRef.current;
+    try {
+      const summary = await scanCodebase();
+      if (activeRepoIdRef.current === scanRepoId && summary.repo.id === scanRepoId) {
+        setStatus(`Scanned ${scanSummaryStatus(summary)}`);
+      }
+    } catch (error) {
+      if (activeRepoIdRef.current === scanRepoId) {
+        setStatus(errorStatus(error, "Scan failed"));
+      }
+    } finally {
+      setIsScanning(false);
+    }
   }, []);
 
   return (
@@ -302,9 +344,9 @@ export function App() {
             <FolderOpen size={17} aria-hidden="true" />
             <span>{isOpening ? "Opening" : "Open Folder"}</span>
           </button>
-          <button className="icon-button" disabled title="Generate">
+          <button className="icon-button" onClick={runScan} disabled={isScanning} title="Scan codebase">
             <RefreshCw size={17} aria-hidden="true" />
-            <span>Generate</span>
+            <span>{isScanning ? "Scanning" : "Scan"}</span>
           </button>
           <label className="search-box">
             <Search size={16} aria-hidden="true" />
@@ -555,6 +597,26 @@ function validationStatusText(validation: ValidationReport, warningIssues: Valid
   }
 
   return "Valid model";
+}
+
+function scanSummaryStatus(summary: ScanSummary): string {
+  return `${summary.scannedFiles} files (${summary.changedFiles} changed, ${summary.deletedFiles} deleted)`;
+}
+
+function errorStatus(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error) {
+    return error;
+  }
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message) {
+      return message;
+    }
+  }
+  return fallback;
 }
 
 function C4Node({ data, selected }: NodeProps) {

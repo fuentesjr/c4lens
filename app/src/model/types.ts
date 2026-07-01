@@ -91,6 +91,18 @@ export interface ValidationReport {
   issues: ValidationIssue[];
 }
 
+export interface ScanSummary {
+  repo: RepoHandle;
+  scanToken: string;
+  scannedFiles: number;
+  changedFiles: number;
+  deletedFiles: number;
+  symbols: number;
+  imports: number;
+  durationMs: number;
+  warnings: ValidationIssue[];
+}
+
 export interface EffectiveModel {
   repo: RepoHandle;
   sourceSha: string;
