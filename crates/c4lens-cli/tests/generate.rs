@@ -300,6 +300,212 @@ fn generate_with_root_package_json_manifest_returns_generated_system_and_contain
 }
 
 #[test]
+fn generate_reuses_single_authored_internal_system_for_generated_containers() {
+    let root = fresh_test_dir("generate-reuses-authored-system");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  billing:
+    name: Billing Platform
+"#,
+    )
+    .expect("write authored model");
+    fs::write(repo.join("c4/model.generated.yml"), "name: [broken\n")
+        .expect("write malformed generated overlay");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  billing:"));
+    assert!(generated_yaml.contains("name: Billing Platform"));
+    assert!(generated_yaml.contains("invoice_api:"));
+    assert!(!generated_yaml.contains("  repo:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_write_reuses_single_authored_internal_system_with_malformed_existing_overlay() {
+    let root = fresh_test_dir("generate-write-reuses-authored-system");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  billing:
+    name: Billing Platform
+"#,
+    )
+    .expect("write authored model");
+    fs::write(repo.join("c4/model.generated.yml"), "name: [broken\n")
+        .expect("write malformed generated overlay");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let generated_yaml =
+        fs::read_to_string(repo.join("c4/model.generated.yml")).expect("generated yaml");
+    assert!(generated_yaml.contains("  billing:"));
+    assert!(generated_yaml.contains("name: Billing Platform"));
+    assert!(generated_yaml.contains("invoice_api:"));
+    assert!(!generated_yaml.contains("  repo:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_falls_back_to_repo_system_when_authored_system_is_invalid() {
+    let root = fresh_test_dir("generate-invalid-authored-system");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  Billing:
+    name: Billing Platform
+"#,
+    )
+    .expect("write invalid authored model");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  repo:"));
+    assert!(!generated_yaml.contains("  Billing:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_uses_repo_system_when_authored_system_selection_is_ambiguous() {
+    let root = fresh_test_dir("generate-ambiguous-authored-system");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  billing:
+    name: Billing Platform
+  fulfillment:
+    name: Fulfillment Platform
+"#,
+    )
+    .expect("write ambiguous authored model");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  repo:"));
+    assert!(!generated_yaml.contains("  billing:"));
+    assert!(!generated_yaml.contains("  fulfillment:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_uses_repo_system_when_authored_system_is_external_only() {
+    let root = fresh_test_dir("generate-external-authored-system");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  stripe:
+    name: Stripe
+    external: true
+"#,
+    )
+    .expect("write external authored model");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  repo:"));
+    assert!(!generated_yaml.contains("  stripe:"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_with_root_go_mod_manifest_returns_generated_system_and_container() {
     let root = fresh_test_dir("generate-root-go-mod");
     let repo = root.join("repo");

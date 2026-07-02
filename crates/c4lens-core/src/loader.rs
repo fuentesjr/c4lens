@@ -46,6 +46,28 @@ pub fn load_effective_model_from_repo_recovering_generated_overlay(
     }
 }
 
+pub(crate) fn load_authored_effective_model_from_repo(
+    repo: RepoHandle,
+) -> Result<EffectiveModel, CommandError> {
+    let repo_root = canonical_repo_root(&repo)?;
+    let authored =
+        load_optional_model_source(&repo_root, AUTHORED_MODEL_PATH, false)?.ok_or_else(|| {
+            CommandError::new(
+                "model.not_found",
+                "No c4/model.yml exists in this repository.",
+            )
+        })?;
+
+    build_effective_model(
+        repo,
+        &repo_root,
+        ModelInputs {
+            authored: Some(authored),
+            generated: None,
+        },
+    )
+}
+
 pub fn validate_generated_overlay_yaml(
     repo: RepoHandle,
     generated_yaml: &str,

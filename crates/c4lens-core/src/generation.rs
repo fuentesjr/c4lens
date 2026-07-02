@@ -14,7 +14,20 @@ pub const GENERATED_MODEL_HEADER: &str = "# c4/model.generated.yml
 # yaml-language-server: $schema=./schema.json
 ";
 
+#[derive(Debug, Clone)]
+pub struct SingleAuthoredInternalSystem {
+    pub slug: String,
+    pub name: String,
+}
+
 pub fn build_minimal_generated_model(repo: &RepoHandle) -> Model {
+    build_minimal_generated_model_from_authored_system(repo, None)
+}
+
+pub fn build_minimal_generated_model_from_authored_system(
+    repo: &RepoHandle,
+    authored_internal_system: Option<&SingleAuthoredInternalSystem>,
+) -> Model {
     let root_path = Path::new(&repo.root_path);
     let mut containers = Vec::new();
 
@@ -46,14 +59,18 @@ pub fn build_minimal_generated_model(repo: &RepoHandle) -> Model {
 
     let mut systems = BTreeMap::new();
     if !containers.is_empty() {
-        let system_slug = slugify(&repo.name);
+        let (system_slug, system_name) = match authored_internal_system {
+            Some(system) => (system.slug.clone(), system.name.clone()),
+            None => (slugify(&repo.name), titleize(&repo.name)),
+        };
+
         let mut reserved_slugs = BTreeSet::new();
         reserved_slugs.insert(system_slug.clone());
 
         let mut generated_system = crate::System {
             base: crate::BaseElement {
                 slug: system_slug.clone(),
-                name: titleize(&repo.name),
+                name: system_name,
                 description: None,
                 tech: None,
                 status: Default::default(),
@@ -97,6 +114,30 @@ pub fn build_minimal_generated_model(repo: &RepoHandle) -> Model {
         relationships: Vec::new(),
         generated: true,
     }
+}
+
+pub fn single_authored_internal_system_for_generation(
+    repo: &RepoHandle,
+) -> Option<SingleAuthoredInternalSystem> {
+    let model = crate::loader::load_authored_effective_model_from_repo(repo.clone())
+        .ok()?
+        .model;
+
+    let mut internal = model
+        .systems
+        .into_iter()
+        .filter(|(_, system)| !system.external)
+        .map(|(slug, system)| SingleAuthoredInternalSystem {
+            slug,
+            name: system.base.name,
+        });
+
+    let first = internal.next()?;
+    if internal.next().is_some() {
+        return None;
+    }
+
+    Some(first)
 }
 
 fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {

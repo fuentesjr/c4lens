@@ -6,10 +6,10 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use c4lens_core::{
-    acquire_repo_write_lock, build_minimal_generated_model, load_effective_model_from_repo,
-    render_generated_model_yaml, repo_handle_from_path, scan_repo, validate_generated_overlay_yaml,
-    CommandError, RepoHandle, ScanOptions, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH,
-    SCHEMA_PATH,
+    acquire_repo_write_lock, build_minimal_generated_model_from_authored_system,
+    load_effective_model_from_repo, render_generated_model_yaml, repo_handle_from_path, scan_repo,
+    single_authored_internal_system_for_generation, validate_generated_overlay_yaml, CommandError,
+    RepoHandle, ScanOptions, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH, SCHEMA_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -232,7 +232,11 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
         }
     }
 
-    let generated = build_minimal_generated_model(&repo);
+    let authored_internal_system = single_authored_internal_system_for_generation(&repo);
+    let generated = build_minimal_generated_model_from_authored_system(
+        &repo,
+        authored_internal_system.as_ref(),
+    );
     let generated_yaml = match render_generated_model_yaml(&generated) {
         Ok(yaml) => yaml,
         Err(error) => {
