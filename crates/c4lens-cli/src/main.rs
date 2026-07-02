@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use c4lens_core::{
     acquire_repo_write_lock, build_minimal_generated_model, load_effective_model_from_repo,
     render_generated_model_yaml, repo_handle_from_path, scan_repo, CommandError, RepoHandle,
-    ScanOptions, GENERATED_MODEL_PATH,
+    ScanOptions, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH, SCHEMA_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -341,18 +341,23 @@ fn write_generated_overlay_with_lock(
     generated_yaml: &str,
 ) -> Result<(), CommandError> {
     let _write_lock = acquire_repo_write_lock(repo)?;
-    write_generated_overlay(repo, generated_yaml)
+
+    let repo_root = canonicalize_repo_root(&repo.root_path)?;
+    let (generated_dir, generated_path) = validate_generated_overlay_paths(&repo_root)?;
+
+    write_schema_json_if_missing(&generated_dir)?;
+    write_generated_overlay_to_path(&generated_path, generated_yaml)
 }
 
 fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, CommandError> {
-    let repo_root = Path::new(&repo.root_path).canonicalize().map_err(|error| {
-        CommandError::with_details(
-            "repo.invalid",
-            "Failed to resolve repository path.",
-            serde_json::json!({ "path": repo.root_path, "error": error.to_string() }),
-        )
-    })?;
-    let generated_path = repo_root.join(GENERATED_MODEL_PATH);
+    let repo_root = canonicalize_repo_root(&repo.root_path)?;
+    read_generated_overlay_from_path(&repo_root, &repo_root.join(GENERATED_MODEL_PATH))
+}
+
+fn read_generated_overlay_from_path(
+    repo_root: &Path,
+    generated_path: &Path,
+) -> Result<Option<String>, CommandError> {
     let generated_dir = generated_path.parent().ok_or_else(|| {
         CommandError::new("generation.failed", "Generated model path is invalid.")
     })?;
@@ -365,7 +370,7 @@ fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, 
                 "fs.read_failed",
                 "Failed to inspect generated model directory.",
                 serde_json::json!({ "path": "c4", "error": error.to_string() }),
-            ))
+            ));
         }
     };
     if dir_metadata.file_type().is_symlink() {
@@ -390,7 +395,7 @@ fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, 
             serde_json::json!({ "path": "c4", "error": error.to_string() }),
         )
     })?;
-    if !canonical_generated_dir.starts_with(&repo_root) {
+    if !canonical_generated_dir.starts_with(repo_root) {
         return Err(CommandError::with_details(
             "repo.path_denied",
             "Generated model directory resolves outside the repository.",
@@ -398,7 +403,7 @@ fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, 
         ));
     }
 
-    let file_metadata = match fs::symlink_metadata(&generated_path) {
+    let file_metadata = match fs::symlink_metadata(generated_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -435,14 +440,119 @@ fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, 
         })
 }
 
-fn write_generated_overlay(repo: &RepoHandle, generated_yaml: &str) -> Result<(), CommandError> {
-    let repo_root = Path::new(&repo.root_path).canonicalize().map_err(|error| {
+fn write_schema_json_if_missing(generated_dir: &Path) -> Result<(), CommandError> {
+    let schema_path = generated_dir.join("schema.json");
+
+    if schema_json_exists(&schema_path)? {
+        return Ok(());
+    }
+
+    write_schema_json_to_path(&schema_path)
+}
+
+fn schema_json_exists(schema_path: &Path) -> Result<bool, CommandError> {
+    match fs::symlink_metadata(&schema_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(CommandError::with_details(
+                    "repo.path_denied",
+                    "Schema file must not be a symlink.",
+                    serde_json::json!({ "path": SCHEMA_PATH }),
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(CommandError::with_details(
+                    "path.invalid_target",
+                    "Schema path exists but is not a file.",
+                    serde_json::json!({ "path": SCHEMA_PATH }),
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to inspect schema file.",
+            serde_json::json!({ "path": SCHEMA_PATH, "error": error.to_string() }),
+        )),
+    }
+}
+
+fn write_schema_json_to_path(schema_path: &Path) -> Result<(), CommandError> {
+    let schema_dir = schema_path
+        .parent()
+        .ok_or_else(|| CommandError::new("generation.failed", "Schema file path is invalid."))?;
+
+    let temp_path = schema_dir.join(format!(
+        ".schema.json.tmp.{}.{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    let mut temp_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create temporary schema file.",
+                serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+            )
+        })?;
+
+    if let Err(error) = temp_file.write_all(BUNDLED_MODEL_SCHEMA_JSON.as_bytes()) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to write temporary schema file.",
+            serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+        ));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to sync temporary schema file.",
+            serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+        ));
+    }
+    drop(temp_file);
+
+    match fs::hard_link(&temp_path, schema_path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&temp_path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&temp_path);
+            schema_json_exists(schema_path)?;
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path);
+            return Err(CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create schema file.",
+                serde_json::json!({ "path": SCHEMA_PATH, "error": error.to_string() }),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn canonicalize_repo_root(root_path: &str) -> Result<PathBuf, CommandError> {
+    Path::new(root_path).canonicalize().map_err(|error| {
         CommandError::with_details(
             "repo.invalid",
             "Failed to resolve repository path.",
-            serde_json::json!({ "path": repo.root_path, "error": error.to_string() }),
+            serde_json::json!({ "path": root_path, "error": error.to_string() }),
         )
-    })?;
+    })
+}
+
+fn validate_generated_overlay_paths(repo_root: &Path) -> Result<(PathBuf, PathBuf), CommandError> {
     let generated_path = repo_root.join(GENERATED_MODEL_PATH);
     let generated_dir = generated_path.parent().ok_or_else(|| {
         CommandError::new("generation.failed", "Generated model path is invalid.")
@@ -504,6 +614,17 @@ fn write_generated_overlay(repo: &RepoHandle, generated_yaml: &str) -> Result<()
             ));
         }
     }
+
+    Ok((generated_dir.to_path_buf(), generated_path))
+}
+
+fn write_generated_overlay_to_path(
+    generated_path: &Path,
+    generated_yaml: &str,
+) -> Result<(), CommandError> {
+    let generated_dir = generated_path.parent().ok_or_else(|| {
+        CommandError::new("generation.failed", "Generated model path is invalid.")
+    })?;
 
     let temp_path = generated_dir.join(format!(
         ".model.generated.yml.tmp.{}.{}",

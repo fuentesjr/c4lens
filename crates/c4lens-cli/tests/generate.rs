@@ -41,6 +41,8 @@ fn generate_write_creates_generated_overlay_without_model_yaml() {
 
     let generated_path = repo.join("c4/model.generated.yml");
     assert!(generated_path.is_file());
+    let schema_path = repo.join("c4/schema.json");
+    assert!(schema_path.is_file());
     assert!(!repo.join("c4/model.yml").exists());
 
     let generated = fs::read_to_string(&generated_path).expect("generated model");
@@ -51,8 +53,67 @@ fn generate_write_creates_generated_overlay_without_model_yaml() {
     );
     assert!(generated.contains("name: "));
     assert!(generated.contains("generated: true"));
+    let schema: Value = serde_json::from_str(&fs::read_to_string(&schema_path).expect("schema"))
+        .expect("valid schema json");
+    assert_eq!(schema["$id"], "https://c4lens.local/schema.json");
+    assert_eq!(schema["title"], "c4lens model");
+    assert_eq!(schema["properties"]["name"]["type"], "string");
+    assert_eq!(
+        schema["$defs"]["container"]["properties"]["kind"]["$ref"],
+        "#/$defs/containerKind"
+    );
 
     cleanup(repo);
+}
+
+#[test]
+fn generate_write_preserves_existing_schema_json() {
+    let repo = fresh_test_dir("generate-write-existing-schema");
+    let schema_path = repo.join("c4/schema.json");
+    fs::create_dir_all(schema_path.parent().expect("schema parent")).expect("create c4");
+    let existing_schema = "{\"title\": \"pre-existing\"}\n";
+    fs::write(&schema_path, existing_schema).expect("write schema");
+
+    Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let generated_schema = fs::read_to_string(&schema_path).expect("schema");
+    assert_eq!(generated_schema, existing_schema);
+
+    cleanup(repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_write_rejects_symlinked_schema_json_without_writing_overlay() {
+    let repo = fresh_test_dir("generate-write-symlink-schema");
+    let outside = fresh_test_dir("generate-write-symlink-schema-outside");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    let outside_target = outside.join("schema.json");
+    fs::write(&outside_target, "outside schema").expect("write outside schema");
+    std::os::unix::fs::symlink(&outside_target, repo.join("c4/schema.json"))
+        .expect("symlink schema");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(4);
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
+
+    assert_eq!(payload["issues"][0]["code"], "repo.path_denied");
+    assert!(!repo.join("c4/model.generated.yml").exists());
+    assert_eq!(
+        fs::read_to_string(outside_target).expect("outside schema"),
+        "outside schema"
+    );
+    cleanup(repo);
+    cleanup(outside);
 }
 
 #[test]
@@ -271,6 +332,8 @@ fn generate_write_rejects_symlinked_c4_directory() {
 
     assert_eq!(payload["issues"][0]["code"], "repo.path_denied");
     assert!(!outside.join("model.generated.yml").exists());
+    assert!(!repo.join("c4/schema.json").exists());
+    assert!(!repo.join("c4/model.generated.yml").exists());
     cleanup(repo);
     cleanup(outside);
 }
@@ -295,6 +358,7 @@ fn generate_write_rejects_symlinked_generated_overlay() {
     let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
 
     assert_eq!(payload["issues"][0]["code"], "repo.path_denied");
+    assert!(!repo.join("c4/schema.json").exists());
     assert_eq!(
         fs::read_to_string(outside_target).expect("outside target"),
         "outside"
