@@ -12,7 +12,7 @@ pub use generation::{
 };
 pub use index::{
     default_index_path, get_element_code, list_internal_crate_import_edges, migrate_index,
-    scan_repo, ScanOptions,
+    repo_scan_token, scan_repo, ScanOptions,
 };
 pub use loader::{
     load_effective_model_from_repo, load_effective_model_from_repo_recovering_generated_overlay,

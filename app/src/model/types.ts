@@ -111,6 +111,21 @@ export interface GenerationChange {
   selectedByDefault: boolean;
 }
 
+export interface ApplyGeneratedSelection {
+  acceptAll: true;
+  acceptedChangeIds?: never;
+}
+
+export interface ApplyGeneratedParams {
+  generationId: string;
+  expectedAuthoredSha: string | null;
+  expectedOverlaySha: string | null;
+  expectedModelSourceSha: string;
+  expectedIndexScanToken: string;
+  expectedSchemaVersion: string;
+  selection: ApplyGeneratedSelection;
+}
+
 export interface GenerationDiff {
   candidateId: string;
   repo: RepoHandle;

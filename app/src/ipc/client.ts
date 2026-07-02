@@ -8,6 +8,7 @@ import type {
   GenerationDiff,
   RepoHandle,
   ScanSummary,
+  ApplyGeneratedParams,
   ValidationReport,
 } from "../model/types";
 
@@ -93,6 +94,14 @@ export async function generateModel(params: GenerateModelParams = {}): Promise<G
   }
 
   return await invoke<GenerationDiff>("generate_model", { params });
+}
+
+export async function applyGenerated(params: ApplyGeneratedParams): Promise<void> {
+  if (!isTauriDesktop()) {
+    throw new Error("Apply is available in the Tauri desktop shell");
+  }
+
+  await invoke<void>("apply_generated", { params });
 }
 
 export async function getElementCode(slug: string): Promise<CodeRef | null> {

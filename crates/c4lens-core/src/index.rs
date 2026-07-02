@@ -44,6 +44,28 @@ pub fn scan_repo(repo: RepoHandle, options: ScanOptions) -> Result<ScanSummary, 
     scan_repo_with_connection(connection, repo, options.force, started, &index_exclusions)
 }
 
+pub fn repo_scan_token(
+    repo: &RepoHandle,
+    index_path: Option<PathBuf>,
+) -> Result<Option<String>, CommandError> {
+    let index_path = index_path.unwrap_or_else(|| default_index_path(repo));
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+
+    let connection = Connection::open(&index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+    connection
+        .query_row(
+            "SELECT scan_token FROM repos WHERE id = ?1",
+            params![repo.id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|token| token.flatten())
+        .map_err(sqlite_error)
+}
+
 pub fn get_element_code(
     repo: &RepoHandle,
     index_path: &Path,

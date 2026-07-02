@@ -24,6 +24,7 @@ fn main() {
             commands::repo::scan_codebase,
             commands::repo::get_element_code,
             commands::repo::generate_model,
+            commands::repo::apply_generated,
             commands::repo::open_in_editor,
         ])
         .run(tauri::generate_context!())

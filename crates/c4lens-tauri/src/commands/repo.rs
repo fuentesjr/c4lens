@@ -1,17 +1,19 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{self, Command};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use c4lens_core::{
-    build_minimal_generated_model_from_authored_system, default_index_path,
-    get_element_code as core_get_element_code,
+    acquire_repo_write_lock, build_minimal_generated_model_from_authored_system,
+    default_index_path, get_element_code as core_get_element_code,
     load_effective_model_from_repo_recovering_generated_overlay, render_generated_model_yaml,
-    repo_handle_from_path, scan_repo, single_authored_internal_system_for_generation,
-    validate_generated_overlay_yaml_with_report, CodeRef, CommandError, EffectiveModel, Model,
-    RepoHandle, ScanOptions, ScanSummary, ValidationReport, BUNDLED_MODEL_SCHEMA_JSON,
-    GENERATED_MODEL_PATH,
+    repo_handle_from_path, repo_scan_token, scan_repo,
+    single_authored_internal_system_for_generation, validate_generated_overlay_yaml_with_report,
+    CodeRef, CommandError, EffectiveModel, Model, RepoHandle, ScanOptions, ScanSummary,
+    ValidationReport, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH, SCHEMA_PATH,
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -40,6 +42,28 @@ pub struct GetElementCodeParams {
 pub struct GenerateModelParams {
     #[serde(default)]
     pub scan_first: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyGeneratedSelection {
+    #[serde(default)]
+    pub accept_all: bool,
+    #[serde(default)]
+    pub accepted_change_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyGeneratedParams {
+    pub generation_id: String,
+    pub expected_authored_sha: Option<String>,
+    pub expected_overlay_sha: Option<String>,
+    pub expected_model_source_sha: String,
+    pub expected_index_scan_token: String,
+    pub expected_schema_version: String,
+    #[serde(default)]
+    pub selection: ApplyGeneratedSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -112,6 +136,14 @@ pub fn open_repo(
         *guard = Some(repo.clone());
     }
 
+    {
+        let mut guard = state
+            .latest_generation_candidate
+            .lock()
+            .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
+        *guard = None;
+    }
+
     if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
         let _ = window.emit(
             MODEL_CHANGED,
@@ -177,7 +209,46 @@ pub fn generate_model(
     state: State<AppState>,
 ) -> Result<GenerationDiff, CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
-    generate_model_for_repo(repo, params.unwrap_or_default(), None)
+    let diff = generate_model_for_repo(repo, params.unwrap_or_default(), None)?;
+    let mut candidate_guard = state
+        .latest_generation_candidate
+        .lock()
+        .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
+    *candidate_guard = Some(diff.clone());
+    Ok(diff)
+}
+
+#[command]
+pub fn apply_generated(
+    params: ApplyGeneratedParams,
+    window: Window,
+    state: State<AppState>,
+) -> Result<(), CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    let candidate = current_generation_candidate(&state.latest_generation_candidate)?;
+
+    apply_generated_candidate_to_repo(&repo, &params, &candidate, None)?;
+
+    {
+        let mut candidate_guard = state
+            .latest_generation_candidate
+            .lock()
+            .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
+        *candidate_guard = None;
+    }
+
+    if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo) {
+        let _ = window.emit(
+            MODEL_CHANGED,
+            ModelChangedPayload {
+                repo_id: model.repo.id,
+                source_sha: model.source_sha,
+                validation: model.validation,
+            },
+        );
+    }
+
+    Ok(())
 }
 
 #[command]
@@ -232,8 +303,12 @@ fn generate_model_for_repo(
     index_path: Option<PathBuf>,
 ) -> Result<GenerationDiff, CommandError> {
     let mut index_scan_token = String::new();
+    let scan_token_index_path = index_path.clone();
     if params.scan_first {
         index_scan_token = scan_codebase_for_repo(repo.clone(), false, index_path)?.scan_token;
+    }
+    if index_scan_token.is_empty() {
+        index_scan_token = repo_scan_token(&repo, scan_token_index_path)?.unwrap_or_default();
     }
 
     let authored_internal_system = single_authored_internal_system_for_generation(&repo);
@@ -278,6 +353,436 @@ fn generate_model_for_repo(
         changes: generation_changes(&generated, reused_system_slug),
         validation,
     })
+}
+
+fn verify_apply_generated_params(
+    repo: &RepoHandle,
+    params: &ApplyGeneratedParams,
+    candidate: &GenerationDiff,
+    index_path: Option<PathBuf>,
+) -> Result<(), CommandError> {
+    if candidate.candidate_id != params.generation_id {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Generation candidate id does not match request.",
+        ));
+    }
+
+    if candidate.repo.id != repo.id {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Generation candidate belongs to a different repository.",
+        ));
+    }
+
+    if params.expected_authored_sha != candidate.base_authored_sha {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Authored model hash changed while generation candidate was prepared.",
+        ));
+    }
+
+    if params.expected_model_source_sha != candidate.model_source_sha {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Model source state changed while generation candidate was prepared.",
+        ));
+    }
+
+    if params.expected_index_scan_token != candidate.index_scan_token {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Scan token changed while generation candidate was prepared.",
+        ));
+    }
+
+    if params.expected_schema_version != candidate.schema_version {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Schema version changed while generation candidate was prepared.",
+        ));
+    }
+
+    if params.expected_overlay_sha != candidate.base_overlay_sha {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Generation candidate overlay hash does not match current stored candidate.",
+        ));
+    }
+
+    if !params.selection.accept_all || !params.selection.accepted_change_ids.is_empty() {
+        return Err(CommandError::new(
+            "generation.no_changes",
+            "MVP apply requires acceptAll=true with no per-change selection.",
+        ));
+    }
+
+    let current_authored_sha = read_file_sha(repo, "c4/model.yml")?;
+    if current_authored_sha != params.expected_authored_sha {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Authored model changed while generation candidate was prepared.",
+        ));
+    }
+
+    let current_overlay_sha = read_file_sha(repo, GENERATED_MODEL_PATH)?;
+    if current_overlay_sha != params.expected_overlay_sha {
+        return Err(CommandError::new(
+            "generation.overlay_changed",
+            "Generated overlay changed while generation candidate was prepared.",
+        ));
+    }
+
+    let source_parts = source_parts_for_repo(repo)?;
+    let current_model_source_sha = model_source_sha_for_repo(repo, &source_parts);
+    if current_model_source_sha != params.expected_model_source_sha {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Model source state changed while generation candidate was prepared.",
+        ));
+    }
+
+    let current_index_scan_token = repo_scan_token(repo, index_path)?.unwrap_or_default();
+    if current_index_scan_token != params.expected_index_scan_token {
+        return Err(CommandError::new(
+            "generation.candidate_stale",
+            "Index scan token changed while generation candidate was prepared.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn current_generation_candidate(
+    candidates: &Mutex<Option<GenerationDiff>>,
+) -> Result<GenerationDiff, CommandError> {
+    let guard = candidates.lock().map_err(|_| {
+        CommandError::new("fs.read_failed", "Failed to inspect generation candidates.")
+    })?;
+    guard.clone().ok_or_else(|| {
+        CommandError::new(
+            "generation.candidate_not_found",
+            "No generation candidate is available.",
+        )
+    })
+}
+
+fn apply_generated_candidate_to_repo(
+    repo: &RepoHandle,
+    params: &ApplyGeneratedParams,
+    candidate: &GenerationDiff,
+    index_path: Option<PathBuf>,
+) -> Result<(), CommandError> {
+    apply_generated_candidate_to_repo_with_hook(repo, params, candidate, index_path, || Ok(()))
+}
+
+fn apply_generated_candidate_to_repo_with_hook<F>(
+    repo: &RepoHandle,
+    params: &ApplyGeneratedParams,
+    candidate: &GenerationDiff,
+    index_path: Option<PathBuf>,
+    before_promote: F,
+) -> Result<(), CommandError>
+where
+    F: FnOnce() -> Result<(), CommandError>,
+{
+    let _write_lock = acquire_repo_write_lock(repo)?;
+    verify_apply_generated_params(repo, params, candidate, index_path.clone())?;
+
+    let repo_root = canonicalize_repo_root(repo)?;
+    let (_, generated_path) = validate_generated_overlay_paths(&repo_root)?;
+    let generated_dir = generated_path.parent().ok_or_else(|| {
+        CommandError::new("generation.failed", "Generated model path is invalid.")
+    })?;
+    let temp_overlay_path =
+        write_generated_overlay_to_temp_file(generated_dir, &candidate.after_yaml)?;
+
+    match validate_generated_overlay_yaml_with_report(repo.clone(), &candidate.after_yaml) {
+        Ok(report) if report.ok => {}
+        Ok(report) => {
+            let _ = fs::remove_file(&temp_overlay_path);
+            return Err(CommandError::with_details(
+                "generation.invalid",
+                "Generated model is invalid.",
+                serde_json::json!({ "validation": report }),
+            ));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp_overlay_path);
+            return Err(error);
+        }
+    }
+
+    if let Err(error) = write_schema_json_if_missing(generated_dir) {
+        let _ = fs::remove_file(&temp_overlay_path);
+        return Err(error);
+    }
+
+    if let Err(error) = before_promote() {
+        let _ = fs::remove_file(&temp_overlay_path);
+        return Err(error);
+    }
+
+    if let Err(error) = verify_apply_generated_params(repo, params, candidate, index_path) {
+        let _ = fs::remove_file(&temp_overlay_path);
+        return Err(error);
+    }
+
+    if let Err(error) = promote_generated_overlay(&temp_overlay_path, &generated_path) {
+        let _ = fs::remove_file(&temp_overlay_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn canonicalize_repo_root(repo: &RepoHandle) -> Result<PathBuf, CommandError> {
+    Path::new(&repo.root_path).canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "repo.invalid",
+            "Failed to resolve repository path.",
+            serde_json::json!({ "path": repo.root_path, "error": error.to_string() }),
+        )
+    })
+}
+
+fn validate_generated_overlay_paths(repo_root: &Path) -> Result<(PathBuf, PathBuf), CommandError> {
+    let generated_path = repo_root.join(GENERATED_MODEL_PATH);
+    let generated_dir = generated_path.parent().ok_or_else(|| {
+        CommandError::new("generation.failed", "Generated model path is invalid.")
+    })?;
+
+    if let Ok(metadata) = fs::symlink_metadata(generated_dir) {
+        if metadata.file_type().is_symlink() {
+            return Err(CommandError::with_details(
+                "repo.path_denied",
+                "Generated model directory must not be a symlink.",
+                serde_json::json!({ "path": "c4" }),
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(CommandError::with_details(
+                "path.invalid_target",
+                "Generated model parent exists but is not a directory.",
+                serde_json::json!({ "path": "c4" }),
+            ));
+        }
+    }
+
+    fs::create_dir_all(generated_dir).map_err(|error| {
+        CommandError::with_details(
+            "fs.write_failed",
+            "Failed to create c4 directory.",
+            serde_json::json!({ "path": "c4", "error": error.to_string() }),
+        )
+    })?;
+
+    let canonical_generated_dir = generated_dir.canonicalize().map_err(|error| {
+        CommandError::with_details(
+            "repo.path_denied",
+            "Failed to resolve generated model directory.",
+            serde_json::json!({ "path": "c4", "error": error.to_string() }),
+        )
+    })?;
+    if !canonical_generated_dir.starts_with(&repo_root) {
+        return Err(CommandError::with_details(
+            "repo.path_denied",
+            "Generated model directory resolves outside the repository.",
+            serde_json::json!({ "path": "c4" }),
+        ));
+    }
+
+    if let Ok(metadata) = fs::symlink_metadata(&generated_path) {
+        if metadata.file_type().is_symlink() {
+            return Err(CommandError::with_details(
+                "repo.path_denied",
+                "Generated model file must not be a symlink.",
+                serde_json::json!({ "path": GENERATED_MODEL_PATH }),
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(CommandError::with_details(
+                "path.invalid_target",
+                "Generated model path exists but is not a file.",
+                serde_json::json!({ "path": GENERATED_MODEL_PATH }),
+            ));
+        }
+    }
+
+    Ok((generated_dir.to_path_buf(), generated_path))
+}
+
+fn write_generated_overlay_to_temp_file(
+    generated_dir: &Path,
+    generated_yaml: &str,
+) -> Result<PathBuf, CommandError> {
+    let temp_path = generated_dir.join(format!(
+        ".model.generated.yml.tmp.{}.{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    let mut temp_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create temporary generated model.",
+                serde_json::json!({
+                    "path": temp_path.display().to_string(),
+                    "error": error.to_string()
+                }),
+            )
+        })?;
+
+    if let Err(error) = temp_file.write_all(generated_yaml.as_bytes()) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to write temporary generated model.",
+            serde_json::json!({
+                "path": temp_path.display().to_string(),
+                "error": error.to_string()
+            }),
+        ));
+    }
+
+    if let Err(error) = temp_file.sync_all() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to sync temporary generated model.",
+            serde_json::json!({
+                "path": temp_path.display().to_string(),
+                "error": error.to_string()
+            }),
+        ));
+    }
+
+    Ok(temp_path)
+}
+
+fn write_schema_json_if_missing(generated_dir: &Path) -> Result<(), CommandError> {
+    let schema_path = generated_dir.join("schema.json");
+
+    if schema_json_exists(&schema_path)? {
+        return Ok(());
+    }
+
+    write_schema_json_to_path(&schema_path)
+}
+
+fn schema_json_exists(schema_path: &Path) -> Result<bool, CommandError> {
+    match fs::symlink_metadata(schema_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(CommandError::with_details(
+                    "repo.path_denied",
+                    "Schema file must not be a symlink.",
+                    serde_json::json!({ "path": SCHEMA_PATH }),
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(CommandError::with_details(
+                    "path.invalid_target",
+                    "Schema path exists but is not a file.",
+                    serde_json::json!({ "path": SCHEMA_PATH }),
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to inspect schema file.",
+            serde_json::json!({ "path": SCHEMA_PATH, "error": error.to_string() }),
+        )),
+    }
+}
+
+fn write_schema_json_to_path(schema_path: &Path) -> Result<(), CommandError> {
+    let schema_dir = schema_path
+        .parent()
+        .ok_or_else(|| CommandError::new("generation.failed", "Schema file path is invalid."))?;
+
+    let temp_path = schema_dir.join(format!(
+        ".schema.json.tmp.{}.{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    let mut temp_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create temporary schema file.",
+                serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+            )
+        })?;
+
+    if let Err(error) = temp_file.write_all(BUNDLED_MODEL_SCHEMA_JSON.as_bytes()) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to write temporary schema file.",
+            serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+        ));
+    }
+
+    if let Err(error) = temp_file.sync_all() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to sync temporary schema file.",
+            serde_json::json!({ "path": temp_path.display().to_string(), "error": error.to_string() }),
+        ));
+    }
+
+    drop(temp_file);
+
+    match fs::hard_link(&temp_path, schema_path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&temp_path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&temp_path);
+            schema_json_exists(schema_path)?;
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path);
+            return Err(CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create schema file.",
+                serde_json::json!({ "path": SCHEMA_PATH, "error": error.to_string() }),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn promote_generated_overlay(temp_path: &Path, generated_path: &Path) -> Result<(), CommandError> {
+    if let Err(error) = fs::rename(temp_path, generated_path) {
+        let _ = fs::remove_file(temp_path);
+        return Err(CommandError::with_details(
+            "fs.write_failed",
+            "Failed to replace generated model.",
+            serde_json::json!({ "path": GENERATED_MODEL_PATH, "error": error.to_string() }),
+        ));
+    }
+
+    Ok(())
 }
 
 fn source_parts_for_repo(repo: &RepoHandle) -> Result<Vec<(String, String)>, CommandError> {
@@ -708,15 +1213,236 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use c4lens_core::repo_handle_from_path;
+    use c4lens_core::{
+        load_effective_model_from_repo_recovering_generated_overlay, repo_handle_from_path,
+    };
 
     use crate::app_state::AppState;
 
     use super::{
-        active_repo_from_mutex, generate_model_for_repo, get_element_code_for_repo,
-        open_command_for_os, open_in_editor_with_opener, resolve_repo_relative_path,
-        scan_codebase_for_repo, GenerateModelParams,
+        active_repo_from_mutex, apply_generated_candidate_to_repo,
+        apply_generated_candidate_to_repo_with_hook, current_generation_candidate,
+        generate_model_for_repo, get_element_code_for_repo, open_command_for_os,
+        open_in_editor_with_opener, resolve_repo_relative_path, scan_codebase_for_repo,
+        verify_apply_generated_params, ApplyGeneratedParams, ApplyGeneratedSelection,
+        GenerateModelParams, GenerationDiff,
     };
+
+    fn build_apply_params_from_diff(diff: &GenerationDiff) -> ApplyGeneratedParams {
+        ApplyGeneratedParams {
+            generation_id: diff.candidate_id.clone(),
+            expected_authored_sha: diff.base_authored_sha.clone(),
+            expected_overlay_sha: diff.base_overlay_sha.clone(),
+            expected_model_source_sha: diff.model_source_sha.clone(),
+            expected_index_scan_token: diff.index_scan_token.clone(),
+            expected_schema_version: diff.schema_version.clone(),
+            selection: ApplyGeneratedSelection {
+                accept_all: true,
+                accepted_change_ids: vec![],
+            },
+        }
+    }
+
+    fn generate_params_repo_for_test(root_suffix: &str) -> (std::path::PathBuf, GenerationDiff) {
+        let root = fresh_test_dir(root_suffix);
+        write_file(
+            &root,
+            "Cargo.toml",
+            "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let diff = generate_model_for_repo(repo, GenerateModelParams { scan_first: false }, None)
+            .expect("generate model candidate");
+
+        (root, diff)
+    }
+
+    #[test]
+    fn current_generation_candidate_missing_when_none_is_stored() {
+        let state = AppState::default();
+
+        let error = current_generation_candidate(&state.latest_generation_candidate)
+            .expect_err("candidate missing");
+
+        assert_eq!(error.code, "generation.candidate_not_found");
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_stale_candidate() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-stale-candidate");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let mut params = build_apply_params_from_diff(&diff);
+        params.expected_model_source_sha =
+            "000000000000000000000000000000000000000000000000000000000000000000".into();
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, None)
+            .expect_err("stale candidate");
+
+        assert_eq!(error.code, "generation.candidate_stale");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_changed_overlay() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-overlay-changed");
+        write_file(&root, "c4/model.generated.yml", "name: Existing\n");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = build_apply_params_from_diff(&diff);
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, None)
+            .expect_err("overlay changed");
+
+        assert_eq!(error.code, "generation.overlay_changed");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_per_change_apply_request() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-per-change");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let mut params = build_apply_params_from_diff(&diff);
+        params.selection.accept_all = false;
+        params.selection.accepted_change_ids = vec!["system:billing".into()];
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, None)
+            .expect_err("accept-all-only");
+
+        assert_eq!(error.code, "generation.no_changes");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_change_ids_with_accept_all() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-ids-with-accept-all");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let mut params = build_apply_params_from_diff(&diff);
+        params.selection.accepted_change_ids = vec!["container:invoice_api".into()];
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, None)
+            .expect_err("change ids are not supported");
+
+        assert_eq!(error.code, "generation.no_changes");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_current_authored_model_change() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-authored-changed");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Authored Model
+systems:
+  billing:
+    name: Billing
+"#,
+        );
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = build_apply_params_from_diff(&diff);
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, None)
+            .expect_err("authored changed");
+
+        assert_eq!(error.code, "generation.candidate_stale");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn verify_apply_generated_params_rejects_current_index_token_change() {
+        let root = fresh_test_dir("apply-generated-index-changed");
+        let index_root = fresh_test_dir("apply-generated-index-changed-root");
+        let index_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "Cargo.toml",
+            "[package]\nname = \"invoice-api\"\nversion = \"0.1.0\"\n",
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let diff = generate_model_for_repo(
+            repo.clone(),
+            GenerateModelParams { scan_first: true },
+            Some(index_path.clone()),
+        )
+        .expect("generate model candidate");
+        write_file(
+            &root,
+            "src/main.rs",
+            "fn main() { println!(\"changed\"); }\n",
+        );
+        scan_codebase_for_repo(repo.clone(), false, Some(index_path.clone()))
+            .expect("rescan changed repo");
+        let params = build_apply_params_from_diff(&diff);
+
+        let error = verify_apply_generated_params(&repo, &params, &diff, Some(index_path))
+            .expect_err("index changed");
+
+        assert_eq!(error.code, "generation.candidate_stale");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn apply_generated_candidate_to_repo_writes_overlay_and_schema() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-happy-path");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = build_apply_params_from_diff(&diff);
+
+        apply_generated_candidate_to_repo(&repo, &params, &diff, None).expect("apply candidate");
+
+        assert_eq!(
+            fs::read_to_string(root.join("c4/model.generated.yml")).expect("generated overlay"),
+            diff.after_yaml
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("c4/schema.json")).expect("schema"),
+            c4lens_core::BUNDLED_MODEL_SCHEMA_JSON
+        );
+        let effective = load_effective_model_from_repo_recovering_generated_overlay(repo)
+            .expect("effective model");
+        assert!(effective
+            .model
+            .systems
+            .values()
+            .any(|system| system.containers.contains_key("invoice_api")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn apply_generated_candidate_to_repo_rechecks_overlay_before_promote() {
+        let (root, diff) = generate_params_repo_for_test("apply-generated-late-overlay-change");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = build_apply_params_from_diff(&diff);
+
+        let error =
+            apply_generated_candidate_to_repo_with_hook(&repo, &params, &diff, None, || {
+                write_file(&root, "c4/model.generated.yml", "name: Late Change\n");
+                Ok(())
+            })
+            .expect_err("late overlay change should be rejected");
+
+        assert_eq!(error.code, "generation.overlay_changed");
+        assert_eq!(
+            fs::read_to_string(root.join("c4/model.generated.yml")).expect("generated overlay"),
+            "name: Late Change\n"
+        );
+
+        cleanup(root);
+    }
 
     #[test]
     fn active_repo_returns_repo_not_open_when_no_repo_is_active() {
@@ -920,6 +1646,34 @@ systems:
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         );
 
+        cleanup(root);
+    }
+
+    #[test]
+    fn generate_model_for_repo_records_existing_scan_token_without_scan() {
+        let root = fresh_test_dir("generate-model-command-existing-index");
+        let index_root = fresh_test_dir("generate-model-command-existing-index-root");
+        let index_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "Cargo.toml",
+            "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_codebase_for_repo(repo.clone(), false, Some(index_path.clone()))
+            .expect("scan repo");
+        let diff = generate_model_for_repo(
+            repo,
+            GenerateModelParams { scan_first: false },
+            Some(index_path),
+        )
+        .expect("generate model candidate");
+
+        assert_eq!(diff.index_scan_token, summary.scan_token);
+
+        cleanup(index_root);
         cleanup(root);
     }
 
