@@ -69,6 +69,11 @@ pub fn build_minimal_generated_model_from_authored_system(
         has_root_manifest = true;
     }
 
+    for container in detect_root_docker_compose_services_manifest(root_path) {
+        containers.push(container);
+        has_root_manifest = true;
+    }
+
     if !has_root_manifest {
         if let Some(container) = detect_root_dockerfile_manifest(root_path) {
             containers.push(container);
@@ -1015,6 +1020,112 @@ fn detect_root_dockerfile_manifest(repo_root: &Path) -> Option<GeneratedContaine
         tech: Some("Docker".to_string()),
         dependency_targets: BTreeMap::new(),
     })
+}
+
+fn detect_root_docker_compose_services_manifest(repo_root: &Path) -> Vec<GeneratedContainer> {
+    let manifest_path = repo_root.join("docker-compose.yml");
+    if !manifest_path.is_file() {
+        return Vec::new();
+    }
+
+    let manifest_text = match fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+
+    let manifest: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&manifest_text) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    let Some(manifest_map) = manifest.as_mapping() else {
+        return Vec::new();
+    };
+
+    let Some(services_node) =
+        manifest_map.get(serde_yaml_ng::Value::String("services".to_string()))
+    else {
+        return Vec::new();
+    };
+
+    let Some(services_map) = services_node.as_mapping() else {
+        return Vec::new();
+    };
+
+    let mut service_names = services_map
+        .iter()
+        .filter_map(|(service_name_node, service_def)| {
+            Some((service_name_node.as_str()?, service_def))
+        })
+        .collect::<Vec<_>>();
+    service_names.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    service_names
+        .into_iter()
+        .map(|(service_name, service_def)| {
+            let code = detect_root_docker_compose_service_code(repo_root, service_def);
+            GeneratedContainer {
+                slug: slugify(service_name),
+                name: titleize(service_name),
+                code,
+                tech: Some("Docker Compose".to_string()),
+                dependency_targets: BTreeMap::new(),
+            }
+        })
+        .collect()
+}
+
+fn detect_root_docker_compose_service_code(
+    repo_root: &Path,
+    service: &serde_yaml_ng::Value,
+) -> String {
+    let Some(service_map) = service.as_mapping() else {
+        return ".".to_string();
+    };
+
+    let Some(build_node) = service_map.get(serde_yaml_ng::Value::String("build".to_string()))
+    else {
+        return ".".to_string();
+    };
+
+    let context = match build_node {
+        serde_yaml_ng::Value::String(context) => Some(context.as_str()),
+        serde_yaml_ng::Value::Mapping(build_map) => build_map
+            .get(serde_yaml_ng::Value::String("context".to_string()))
+            .and_then(serde_yaml_ng::Value::as_str),
+        _ => None,
+    };
+
+    context
+        .filter(|context| !context.trim().is_empty())
+        .map(|context| resolve_root_docker_compose_service_code(repo_root, context))
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn resolve_root_docker_compose_service_code(repo_root: &Path, build_context: &str) -> String {
+    let canonical_repo_root = match repo_root.canonicalize() {
+        Ok(root) => root,
+        Err(_) => return ".".to_string(),
+    };
+
+    let canonical_build_context = match canonical_repo_root.join(build_context).canonicalize() {
+        Ok(path) => path,
+        Err(_) => return ".".to_string(),
+    };
+
+    if !canonical_build_context.is_dir() {
+        return ".".to_string();
+    }
+
+    if !canonical_build_context.starts_with(&canonical_repo_root) {
+        return ".".to_string();
+    }
+
+    match canonical_build_context.strip_prefix(&canonical_repo_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_string(),
+        Ok(relative) => relative.to_string_lossy().into_owned(),
+        Err(_) => ".".to_string(),
+    }
 }
 
 fn gemfile_declares_gem(text: &str, gem_name: &str) -> bool {

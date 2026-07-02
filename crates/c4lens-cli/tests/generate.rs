@@ -588,6 +588,185 @@ fn generate_with_root_dockerfile_and_manifest_does_not_duplicate_container() {
 }
 
 #[test]
+fn generate_with_root_docker_compose_services_returns_generated_containers() {
+    let root = fresh_test_dir("generate-root-docker-compose");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("api")).expect("create api");
+    fs::write(
+        repo.join("docker-compose.yml"),
+        r#"
+services:
+  api:
+    build: ./api
+  worker-service:
+    image: acme/worker:latest
+"#,
+    )
+    .expect("write compose manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("name: Api"));
+    assert!(generated_yaml.contains("tech: Docker Compose"));
+    assert!(generated_yaml.contains("code: api"));
+    assert!(generated_yaml.contains("worker_service:"));
+    assert!(generated_yaml.contains("name: Worker Service"));
+    assert!(generated_yaml.contains("code: ."));
+    assert_eq!(generated_yaml.matches("tech: Docker Compose").count(), 2);
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_skips_docker_compose_build_context_that_escapes_repo() {
+    let root = fresh_test_dir("generate-root-docker-compose-escape");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::write(
+        repo.join("docker-compose.yml"),
+        r#"
+services:
+  api:
+    build: ../outside
+"#,
+    )
+    .expect("write compose manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("tech: Docker Compose"));
+    assert!(generated_yaml.contains("code: ."));
+    assert!(!generated_yaml.contains("../outside"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_uses_docker_compose_build_context_mapping_as_code_path() {
+    let root = fresh_test_dir("generate-root-docker-compose-context-map");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("worker")).expect("create worker");
+    fs::write(
+        repo.join("docker-compose.yml"),
+        r#"
+services:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.worker
+"#,
+    )
+    .expect("write compose manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("worker:"));
+    assert!(generated_yaml.contains("tech: Docker Compose"));
+    assert!(generated_yaml.contains("code: worker"));
+
+    cleanup(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_skips_symlinked_docker_compose_build_context_that_escapes_repo() {
+    let root = fresh_test_dir("generate-root-docker-compose-symlink-escape");
+    let repo = root.join("repo");
+    let outside = root.join("outside");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(&outside).expect("create outside");
+    std::os::unix::fs::symlink(&outside, repo.join("api")).expect("symlink api");
+    fs::write(
+        repo.join("docker-compose.yml"),
+        r#"
+services:
+  api:
+    build: ./api
+"#,
+    )
+    .expect("write compose manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("tech: Docker Compose"));
+    assert!(generated_yaml.contains("code: ."));
+    assert!(!generated_yaml.contains("code: api"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_docker_compose_and_dockerfile_skips_dockerfile_fallback() {
+    let root = fresh_test_dir("generate-root-docker-compose-with-dockerfile");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::write(repo.join("Dockerfile"), "FROM alpine:3.20\n").expect("write dockerfile");
+    fs::write(
+        repo.join("docker-compose.yml"),
+        r#"
+services:
+  api:
+    image: acme/api:latest
+"#,
+    )
+    .expect("write compose manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("tech: Docker Compose"));
+    assert!(!generated_yaml.contains("dockerfile:"));
+    assert!(!generated_yaml.contains("tech: Docker\n"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_with_package_json_dependencies_returns_external_targets_and_relationships() {
     let root = fresh_test_dir("generate-package-json-dependencies");
     let repo = root.join("repo");
