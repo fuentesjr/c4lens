@@ -135,6 +135,61 @@ LIMIT 1
     }))
 }
 
+#[derive(Debug, Clone)]
+pub struct RepoImportEdge {
+    pub from_file: String,
+    pub to_file: String,
+}
+
+pub fn list_internal_crate_import_edges(
+    repo: &RepoHandle,
+    index_path: Option<&Path>,
+) -> Result<Vec<RepoImportEdge>, CommandError> {
+    let index_path = index_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_index_path(repo));
+    if !index_path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let connection = Connection::open(&index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT source_files.path, target_files.path
+FROM imports
+JOIN files AS source_files ON source_files.id = imports.file_id
+JOIN files AS target_files
+  ON target_files.repo_id = source_files.repo_id
+ AND target_files.path = imports.target_path
+WHERE source_files.repo_id = ?1
+  AND imports.kind = 'internal'
+  AND imports.target_module LIKE 'crate::%'
+  AND imports.target_path IS NOT NULL
+ORDER BY source_files.path, target_files.path
+"#,
+        )
+        .map_err(sqlite_error)?;
+
+    let rows = statement
+        .query_map(params![repo.id], |row| {
+            Ok(RepoImportEdge {
+                from_file: row.get::<_, String>(0)?,
+                to_file: row.get::<_, String>(1)?,
+            })
+        })
+        .map_err(sqlite_error)?;
+
+    let mut edges = Vec::new();
+    for row in rows {
+        edges.push(row.map_err(sqlite_error)?);
+    }
+
+    Ok(edges)
+}
+
 pub fn default_index_path(repo: &RepoHandle) -> PathBuf {
     if let Ok(index_dir) = std::env::var("C4LENS_INDEX_DIR") {
         return PathBuf::from(index_dir).join(format!("{}.sqlite3", repo.id));
@@ -324,6 +379,7 @@ fn scan_repo_with_connection(
         }
     }
 
+    refresh_internal_import_resolutions(&transaction, &repo.id, &repo_root)?;
     rebuild_explicit_element_sources(&transaction, &repo, &repo_root, &file_ids_by_path)?;
 
     let scan_token = scan_token_for_files(scanned_files.iter());
@@ -403,7 +459,7 @@ fn extract_file_artifacts(
         match lang {
             "rust" => {
                 extract_rust_symbols(&mut symbols, line_no, clean_line);
-                extract_rust_imports(&mut imports, line_no, clean_line);
+                extract_rust_imports(&mut imports, repo_root, &file.path, line_no, clean_line);
             }
             _ => {}
         }
@@ -543,7 +599,13 @@ fn extract_named_construct<'a>(
     Some((name, kind, before))
 }
 
-fn extract_rust_imports(imports: &mut Vec<ParsedImport>, _line_no: i32, line: &str) {
+fn extract_rust_imports(
+    imports: &mut Vec<ParsedImport>,
+    repo_root: &Path,
+    source_path: &str,
+    _line_no: i32,
+    line: &str,
+) {
     let clean = line.trim_start();
     if !clean.starts_with("use ") {
         return;
@@ -568,11 +630,92 @@ fn extract_rust_imports(imports: &mut Vec<ParsedImport>, _line_no: i32, line: &s
     } else {
         "external"
     };
+    let target_path = if kind == "internal" {
+        resolve_rust_internal_import_target(repo_root, source_path, &normalized)
+    } else {
+        None
+    };
     imports.push(ParsedImport {
         target_module: normalized.clone(),
-        target_path: None,
+        target_path,
         kind,
     });
+}
+
+fn resolve_rust_internal_import_target(
+    repo_root: &Path,
+    source_path: &str,
+    module_path: &str,
+) -> Option<String> {
+    if module_path.contains('{') || module_path.contains('*') {
+        return None;
+    }
+
+    let module_root = rust_module_root_for_import(repo_root, source_path, module_path)?;
+    let segments = rust_import_module_segments(module_path)?;
+    for length in (1..=segments.len()).rev() {
+        let module_segments = &segments[..length];
+        for candidate in rust_module_file_candidates(&module_root, module_segments) {
+            if candidate.is_file() {
+                return relative_posix_path(repo_root, &candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn rust_module_root_for_import(
+    repo_root: &Path,
+    source_path: &str,
+    module_path: &str,
+) -> Option<PathBuf> {
+    if module_path.starts_with("crate::") {
+        return Some(repo_root.join("src"));
+    }
+
+    let source_parent = repo_root.join(source_path).parent()?.to_path_buf();
+    if module_path.starts_with("self::") {
+        return Some(source_parent);
+    }
+
+    if module_path.starts_with("super::") {
+        return Some(source_parent.parent()?.to_path_buf());
+    }
+
+    None
+}
+
+fn rust_import_module_segments(module_path: &str) -> Option<Vec<&str>> {
+    let trimmed = module_path
+        .strip_prefix("crate::")
+        .or_else(|| module_path.strip_prefix("self::"))
+        .or_else(|| module_path.strip_prefix("super::"))?;
+    let segments = trimmed
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments)
+    }
+}
+
+fn rust_module_file_candidates(module_root: &Path, segments: &[&str]) -> Vec<PathBuf> {
+    let mut directory = module_root.to_path_buf();
+    for segment in segments.iter().take(segments.len().saturating_sub(1)) {
+        directory.push(segment);
+    }
+
+    let Some(last) = segments.last() else {
+        return Vec::new();
+    };
+
+    vec![
+        directory.join(format!("{last}.rs")),
+        directory.join(last).join("mod.rs"),
+    ]
 }
 
 fn is_rust_identifier(text: &str) -> bool {
@@ -766,6 +909,59 @@ fn file_has_analysis(connection: &Connection, file_id: i64) -> Result<bool, Comm
         )
         .map_err(sqlite_error)?;
     Ok(import_count > 0)
+}
+
+fn refresh_internal_import_resolutions(
+    connection: &Connection,
+    repo_id: &str,
+    repo_root: &Path,
+) -> Result<(), CommandError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT imports.id, files.path, imports.target_module
+FROM imports
+JOIN files ON files.id = imports.file_id
+WHERE files.repo_id = ?1
+  AND imports.kind = 'internal'
+ORDER BY imports.id
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(sqlite_error)?;
+
+    let mut imports = Vec::new();
+    for row in rows {
+        imports.push(row.map_err(sqlite_error)?);
+    }
+
+    for (import_id, source_path, target_module) in imports {
+        let target_path =
+            resolve_rust_internal_import_target(repo_root, &source_path, &target_module);
+        connection
+            .execute(
+                r#"
+UPDATE imports
+SET target_path = ?2,
+    resolved_file_id = (
+      SELECT id FROM files WHERE repo_id = ?3 AND path = ?2
+    )
+WHERE id = ?1
+"#,
+                params![import_id, target_path.as_deref(), repo_id],
+            )
+            .map_err(sqlite_error)?;
+    }
+
+    Ok(())
 }
 
 fn upsert_file(
@@ -1260,7 +1456,8 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use crate::{
-        acquire_repo_write_lock, get_element_code, repo_handle_from_path, scan_repo, ScanOptions,
+        acquire_repo_write_lock, get_element_code, list_internal_crate_import_edges,
+        repo_handle_from_path, scan_repo, ScanOptions,
     };
 
     use super::migrate_index;
@@ -1474,6 +1671,163 @@ ORDER BY lower(symbols.name)
             )
             .expect("query files after delete");
         assert_eq!(file_count, 2);
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_resolves_simple_rust_crate_import_edges_to_repo_files() {
+        let root = fresh_test_dir("scan-rust-import-edges");
+        let index_root = fresh_test_dir("scan-rust-import-edges-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+"#,
+        );
+        write_file(
+            &root,
+            "src/api/mod.rs",
+            "use crate::domain::Thing;\npub fn handle() {}\n",
+        );
+        write_file(&root, "src/domain/mod.rs", "pub struct Thing;\n");
+        write_file(
+            &root,
+            "src/unresolved/mod.rs",
+            "use crate::missing::Thing;\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list import edges");
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_file, "src/api/mod.rs");
+        assert_eq!(edges[0].to_file, "src/domain/mod.rs");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_resolves_rust_import_edges_when_target_file_is_added_later() {
+        let root = fresh_test_dir("scan-rust-import-edges-incremental-target");
+        let index_root = fresh_test_dir("scan-rust-import-edges-incremental-target-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+"#,
+        );
+        write_file(
+            &root,
+            "src/api/mod.rs",
+            "use crate::domain::Thing;\npub fn handle() {}\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan unresolved importer");
+        let unresolved_edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list unresolved edges");
+        assert!(unresolved_edges.is_empty());
+
+        write_file(&root, "src/domain/mod.rs", "pub struct Thing;\n");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan after adding target");
+
+        let edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list resolved edges");
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_file, "src/api/mod.rs");
+        assert_eq!(edges[0].to_file, "src/domain/mod.rs");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_clears_rust_import_edges_when_target_file_is_deleted() {
+        let root = fresh_test_dir("scan-rust-import-edges-deleted-target");
+        let index_root = fresh_test_dir("scan-rust-import-edges-deleted-target-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+"#,
+        );
+        write_file(
+            &root,
+            "src/api/mod.rs",
+            "use crate::domain::Thing;\npub fn handle() {}\n",
+        );
+        write_file(&root, "src/domain/mod.rs", "pub struct Thing;\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan resolved import");
+        let resolved_edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list resolved edges");
+        assert_eq!(resolved_edges.len(), 1);
+
+        fs::remove_file(root.join("src/domain/mod.rs")).expect("remove target file");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("rescan after deleting target");
+
+        let edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list cleared edges");
+
+        assert!(edges.is_empty());
 
         cleanup(index_root);
         cleanup(root);

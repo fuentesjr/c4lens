@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::{CommandError, Model, RepoHandle};
+use crate::{list_internal_crate_import_edges, CommandError, Model, RepoHandle};
 
 pub const GENERATED_MODEL_PATH: &str = "c4/model.generated.yml";
 pub const SCHEMA_PATH: &str = "c4/schema.json";
@@ -77,6 +77,7 @@ pub fn build_minimal_generated_model_from_authored_system(
 
     let mut systems = BTreeMap::new();
     let mut relationships = Vec::new();
+    let mut generated_components = Vec::new();
 
     if !containers.is_empty() {
         let (system_slug, system_name) = match authored_internal_system {
@@ -118,6 +119,10 @@ pub fn build_minimal_generated_model_from_authored_system(
                 &container_code,
                 &mut reserved_slugs,
                 authored_collision_index.as_ref(),
+            );
+            collect_generated_components_for_container_imports(
+                &components,
+                &mut generated_components,
             );
 
             generated_system.containers.insert(
@@ -227,6 +232,11 @@ pub fn build_minimal_generated_model_from_authored_system(
             }
         }
 
+        relationships.extend(build_scan_discovered_component_relationships(
+            repo,
+            &generated_components,
+        ));
+
         systems.insert(system_slug, generated_system);
     }
 
@@ -238,6 +248,84 @@ pub fn build_minimal_generated_model_from_authored_system(
         relationships,
         generated: true,
     }
+}
+
+#[derive(Debug, Clone)]
+struct GeneratedComponentImportMetadata {
+    slug: String,
+    code_path: String,
+}
+
+fn collect_generated_components_for_container_imports(
+    components: &BTreeMap<String, crate::Component>,
+    generated_components: &mut Vec<GeneratedComponentImportMetadata>,
+) {
+    for (component_slug, component) in components {
+        let Some(code_path) = component.base.code.as_deref() else {
+            continue;
+        };
+
+        generated_components.push(GeneratedComponentImportMetadata {
+            slug: component_slug.clone(),
+            code_path: code_path.to_string(),
+        });
+    }
+}
+
+fn build_scan_discovered_component_relationships(
+    repo: &RepoHandle,
+    generated_components: &[GeneratedComponentImportMetadata],
+) -> Vec<crate::Relationship> {
+    let Ok(import_edges) = list_internal_crate_import_edges(repo, None) else {
+        return Vec::new();
+    };
+    if import_edges.is_empty() || generated_components.is_empty() {
+        return Vec::new();
+    }
+
+    let mut discovered: BTreeSet<(String, String)> = BTreeSet::new();
+    for edge in import_edges {
+        let Some(from_slug) = component_slug_for_file(&edge.from_file, generated_components) else {
+            continue;
+        };
+        let Some(to_slug) = component_slug_for_file(&edge.to_file, generated_components) else {
+            continue;
+        };
+        if from_slug == to_slug {
+            continue;
+        }
+
+        discovered.insert((from_slug, to_slug));
+    }
+
+    let mut relationships = Vec::new();
+    for (from, to) in discovered {
+        relationships.push(crate::Relationship {
+            from,
+            to,
+            description: "Imports".to_string(),
+            tech: None,
+            status: Default::default(),
+            generated: true,
+        });
+    }
+
+    relationships
+}
+
+fn component_slug_for_file(
+    file_path: &str,
+    generated_components: &[GeneratedComponentImportMetadata],
+) -> Option<String> {
+    generated_components
+        .iter()
+        .filter(|component| is_file_in_component(file_path, &component.code_path))
+        .max_by_key(|component| component.code_path.len())
+        .map(|component| component.slug.clone())
+}
+
+fn is_file_in_component(file_path: &str, component_code: &str) -> bool {
+    file_path == component_code || file_path.starts_with(&(String::from(component_code) + "/"))
 }
 
 fn build_generated_container_components(
