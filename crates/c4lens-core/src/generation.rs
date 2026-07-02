@@ -26,6 +26,24 @@ pub fn build_minimal_generated_model(repo: &RepoHandle) -> Model {
         containers.push(container);
     }
 
+    if let Some(container) = detect_root_go_mod_manifest(root_path, &repo.name) {
+        containers.push(container);
+    }
+
+    if let Some(container) = detect_root_pyproject_toml_manifest(root_path, &repo.name) {
+        containers.push(container);
+    }
+
+    if let Some(container) =
+        detect_root_requirements_txt_manifest(root_path, root_path.join("pyproject.toml").is_file())
+    {
+        containers.push(container);
+    }
+
+    if let Some(container) = detect_root_gemfile_manifest(root_path) {
+        containers.push(container);
+    }
+
     let mut systems = BTreeMap::new();
     if !containers.is_empty() {
         let system_slug = slugify(&repo.name);
@@ -88,7 +106,7 @@ fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<Gener
     }
 
     let manifest_text = fs::read_to_string(&manifest_path).ok()?;
-    let name = parse_manifest_name(&manifest_text, repo_name);
+    let name = parse_manifest_name_in_section(&manifest_text, "package", "name", repo_name);
     let slug = slugify(&name);
     let code = if repo_root.join("src").is_dir() {
         "src".to_string()
@@ -140,8 +158,152 @@ fn detect_root_package_json_manifest(
     })
 }
 
-fn parse_manifest_name(text: &str, fallback: &str) -> String {
-    let mut in_package_section = false;
+fn detect_root_go_mod_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("go.mod");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
+    let module_name = manifest_text
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .find(|line| line.starts_with("module "))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|module_path| module_path.split('/').next_back())
+        .unwrap_or(repo_name)
+        .trim_end_matches(".git")
+        .to_string();
+
+    if module_name.is_empty() {
+        return None;
+    }
+
+    let code = if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug: slugify(&module_name),
+        name: titleize(&module_name),
+        code,
+        tech: Some("Go".to_string()),
+    })
+}
+
+fn detect_root_pyproject_toml_manifest(
+    repo_root: &Path,
+    repo_name: &str,
+) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("pyproject.toml");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
+    let name = parse_manifest_name_in_section(&manifest_text, "project", "name", repo_name);
+
+    let code = if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug: slugify(&name),
+        name: titleize(&name),
+        code,
+        tech: Some("Python".to_string()),
+    })
+}
+
+fn detect_root_requirements_txt_manifest(
+    repo_root: &Path,
+    has_pyproject: bool,
+) -> Option<GeneratedContainer> {
+    if has_pyproject || !repo_root.join("requirements.txt").is_file() {
+        return None;
+    }
+
+    let code = if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug: "python".to_string(),
+        name: "Python".to_string(),
+        code,
+        tech: Some("Python".to_string()),
+    })
+}
+
+fn detect_root_gemfile_manifest(repo_root: &Path) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("Gemfile");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
+    let contains_rails = gemfile_declares_gem(&manifest_text, "rails");
+
+    let code = if repo_root.join("app").is_dir() {
+        "app".to_string()
+    } else if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug: "ruby".to_string(),
+        name: "Ruby".to_string(),
+        code,
+        tech: Some(if contains_rails {
+            "Ruby on Rails".to_string()
+        } else {
+            "Ruby".to_string()
+        }),
+    })
+}
+
+fn gemfile_declares_gem(text: &str, gem_name: &str) -> bool {
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim_start();
+        let Some(remainder) = line.strip_prefix("gem") else {
+            continue;
+        };
+        let Some(first_character) = remainder.chars().next() else {
+            continue;
+        };
+        if !first_character.is_ascii_whitespace() && first_character != '(' {
+            continue;
+        }
+
+        let remainder = remainder.trim_start().trim_start_matches('(').trim_start();
+        let declared = remainder
+            .strip_prefix('"')
+            .and_then(|rest| rest.split('"').next())
+            .or_else(|| {
+                remainder
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.split('\'').next())
+            });
+
+        if declared == Some(gem_name) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn parse_manifest_name_in_section(text: &str, section: &str, key: &str, fallback: &str) -> String {
+    let section_header = format!("[{section}]");
+    let mut in_section = false;
 
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -149,21 +311,21 @@ fn parse_manifest_name(text: &str, fallback: &str) -> String {
             continue;
         }
 
-        if line == "[package]" {
-            in_package_section = true;
+        if line == section_header {
+            in_section = true;
             continue;
         }
 
         if line.starts_with('[') {
-            in_package_section = false;
+            in_section = false;
             continue;
         }
 
-        if !in_package_section {
+        if !in_section {
             continue;
         }
 
-        if let Some(raw_name) = parse_toml_string_field(line, "name") {
+        if let Some(raw_name) = parse_toml_string_field(line, key) {
             return raw_name;
         }
     }
@@ -491,6 +653,78 @@ version = "0.1.0"
         assert_eq!(container.base.tech.as_deref(), Some("Node.js"));
         assert_eq!(container.base.code.as_deref(), Some("app"));
         assert_eq!(container.base.name, "Acme Web Client");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_from_root_gemfile_only_marks_declared_rails_gem() {
+        let root = fresh_test_dir("generated-gemfile-rails-detection");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::write(
+            repo_dir.join("Gemfile"),
+            r#"
+source "https://rails-assets.org"
+gem "dry-railsish"
+"#,
+        )
+        .expect("write gemfile");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("ruby")
+            .expect("generated ruby container");
+
+        assert_eq!(container.base.tech.as_deref(), Some("Ruby"));
+
+        fs::write(
+            repo_dir.join("Gemfile"),
+            r#"
+source "https://rubygems.org"
+gem "rails", "~> 7.1"
+"#,
+        )
+        .expect("write gemfile");
+
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("ruby")
+            .expect("generated ruby container");
+
+        assert_eq!(container.base.tech.as_deref(), Some("Ruby on Rails"));
+
+        fs::write(
+            repo_dir.join("Gemfile"),
+            r#"
+source "https://rubygems.org"
+gem("rails", "~> 7.1")
+"#,
+        )
+        .expect("write gemfile");
+
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("ruby")
+            .expect("generated ruby container");
+
+        assert_eq!(container.base.tech.as_deref(), Some("Ruby on Rails"));
 
         cleanup(root);
     }

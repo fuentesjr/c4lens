@@ -234,6 +234,123 @@ fn generate_with_root_package_json_manifest_returns_generated_system_and_contain
 }
 
 #[test]
+fn generate_with_root_go_mod_manifest_returns_generated_system_and_container() {
+    let root = fresh_test_dir("generate-root-go-mod");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api_service:"));
+    assert!(generated_yaml.contains("Api Service"));
+    assert!(generated_yaml.contains("tech: Go"));
+    assert!(generated_yaml.contains("code: src"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_pyproject_toml_manifest_returns_generated_system_and_container() {
+    let root = fresh_test_dir("generate-root-pyproject-toml");
+    let repo = root.join("web-service");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("pyproject.toml"),
+        r#"[project]
+name = "data-portal"
+version = "0.1.0"
+"#,
+    )
+    .expect("write pyproject manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("data_portal:"));
+    assert!(generated_yaml.contains("Data Portal"));
+    assert!(generated_yaml.contains("tech: Python"));
+    assert!(generated_yaml.contains("code: src"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_requirements_txt_manifest_returns_fallback_python_container_when_no_pyproject(
+) {
+    let root = fresh_test_dir("generate-root-requirements-fallback");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::write(repo.join("requirements.txt"), "flask==3.0\n").expect("write requirements");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("python:"));
+    assert!(generated_yaml.contains("name: Python"));
+    assert!(generated_yaml.contains("tech: Python"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_gemfile_manifest_uses_rails_tech() {
+    let root = fresh_test_dir("generate-root-gemfile-rails");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(
+        repo.join("Gemfile"),
+        "source 'https://rubygems.org'\ngem 'rails', '~> 7.1'\n",
+    )
+    .expect("write gemfile");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("ruby:"));
+    assert!(generated_yaml.contains("tech: Ruby on Rails"));
+    assert!(generated_yaml.contains("code: app"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_write_reports_write_locked_when_writer_is_active() {
     let repo = fresh_test_dir("generate-write-locked");
     let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
