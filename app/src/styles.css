@@ -91,6 +91,11 @@ input {
   padding: 0 11px;
 }
 
+.icon-button.compact {
+  height: 26px;
+  padding: 0 8px;
+}
+
 .icon-button.primary {
   border-color: #167d7f;
   background: #167d7f;
@@ -122,6 +127,27 @@ input {
   border: 0;
   outline: 0;
   background: transparent;
+}
+
+.generation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 380px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid #cfd6df;
+  border-radius: 6px;
+  background: #fbfcfd;
+  color: #344454;
+  font-size: 12px;
+}
+
+.generation-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scopebar {

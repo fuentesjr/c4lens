@@ -22,11 +22,14 @@ import {
   Network,
   RefreshCw,
   Search,
+  Sparkles,
   UserRound,
 } from "lucide-react";
 import {
+  applyGenerated,
   fetchActiveModel,
   getElementCode,
+  generateModel,
   isTauriDesktop,
   listenToModelEvents,
   openRepositoryFromDialog,
@@ -35,7 +38,16 @@ import {
 } from "./ipc/client";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
-import type { CodeRef, EffectiveModel, ElementNode, ScanSummary, ValidationIssue, ValidationReport } from "./model/types";
+import type {
+  CodeRef,
+  EffectiveModel,
+  ElementNode,
+  GenerationDiff,
+  GenerationSummary,
+  ScanSummary,
+  ValidationIssue,
+  ValidationReport,
+} from "./model/types";
 import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
   availableContainers,
@@ -73,8 +85,11 @@ export function App() {
   const [status, setStatus] = useState("Sample model ready");
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewState>(idleSourcePreview);
   const [indexRevision, setIndexRevision] = useState<string | null>(null);
+  const [generationCandidate, setGenerationCandidate] = useState<GenerationDiff | null>(null);
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isApplyingGenerated, setIsApplyingGenerated] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
   const [nodes, setNodes, onNodesChange] = useNodesState<C4FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -291,6 +306,7 @@ export function App() {
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
         setIndexRevision(null);
+        setGenerationCandidate(null);
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
@@ -320,6 +336,7 @@ export function App() {
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
         setIndexRevision(null);
+        setGenerationCandidate(null);
         setStatus("Model updated");
       },
       onValidationFailed: (payload) => {
@@ -328,6 +345,7 @@ export function App() {
         }
 
         setValidationOverride(payload.validation);
+        setGenerationCandidate(null);
         setStatus("Model validation failed");
       },
       onIndexUpdated: (payload) => {
@@ -337,6 +355,7 @@ export function App() {
 
         setStatus(`Index updated: ${scanSummaryStatus(payload.summary)}`);
         setIndexRevision(payload.summary.scanToken);
+        setGenerationCandidate(null);
       },
     }).then((cleanup) => {
       if (disposed) {
@@ -368,6 +387,7 @@ export function App() {
       }
       updateActiveRepoId(result.repo.id);
       setIndexRevision(null);
+      setGenerationCandidate(null);
       if (result.model) {
         const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
         setModel(result.model);
@@ -413,6 +433,7 @@ export function App() {
       if (activeRepoIdRef.current === scanRepoId && summary.repo.id === scanRepoId) {
         setStatus(`Scanned ${scanSummaryStatus(summary)}`);
         setIndexRevision(summary.scanToken);
+        setGenerationCandidate(null);
       }
     } catch (error) {
       if (activeRepoIdRef.current === scanRepoId) {
@@ -422,6 +443,66 @@ export function App() {
       setIsScanning(false);
     }
   }, []);
+
+  const runGenerate = useCallback(async () => {
+    if (!isTauriDesktop()) {
+      setStatus("Generation is available in the Tauri desktop shell");
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationCandidate(null);
+    setStatus("Generating model");
+    const generationRepoId = activeRepoIdRef.current;
+    try {
+      const candidate = await generateModel({ scanFirst: true });
+      if (activeRepoIdRef.current === generationRepoId && candidate.repo.id === generationRepoId) {
+        setGenerationCandidate(candidate);
+        setStatus(`Generated ${generationSummaryStatus(candidate.summary)}`);
+      }
+    } catch (error) {
+      if (activeRepoIdRef.current === generationRepoId) {
+        setStatus(errorStatus(error, "Generation failed"));
+      }
+    } finally {
+      setIsGenerating(false);
+    }
+  }, []);
+
+  const applyGenerationCandidate = useCallback(async () => {
+    if (!generationCandidate) {
+      return;
+    }
+    if (!isTauriDesktop()) {
+      setStatus("Apply is available in the Tauri desktop shell");
+      return;
+    }
+
+    setIsApplyingGenerated(true);
+    setStatus("Applying generated model");
+    const generationRepoId = generationCandidate.repo.id;
+    try {
+      await applyGenerated({
+        generationId: generationCandidate.candidateId,
+        expectedAuthoredSha: generationCandidate.baseAuthoredSha,
+        expectedOverlaySha: generationCandidate.baseOverlaySha,
+        expectedModelSourceSha: generationCandidate.modelSourceSha,
+        expectedIndexScanToken: generationCandidate.indexScanToken,
+        expectedSchemaVersion: generationCandidate.schemaVersion,
+        selection: { acceptAll: true },
+      });
+      if (activeRepoIdRef.current === generationRepoId) {
+        setGenerationCandidate(null);
+        setStatus("Applied generated model");
+      }
+    } catch (error) {
+      if (activeRepoIdRef.current === generationRepoId) {
+        setStatus(errorStatus(error, "Apply failed"));
+      }
+    } finally {
+      setIsApplyingGenerated(false);
+    }
+  }, [generationCandidate]);
 
   const openSourceInEditor = useCallback(async () => {
     if (!isTauriDesktop() || sourcePreview.status !== "ready") {
@@ -456,6 +537,29 @@ export function App() {
             <RefreshCw size={17} aria-hidden="true" />
             <span>{isScanning ? "Scanning" : "Scan"}</span>
           </button>
+          <button
+            className="icon-button"
+            onClick={runGenerate}
+            disabled={isGenerating || isApplyingGenerated || isOpening || isScanning}
+            title="Generate from code"
+          >
+            <Sparkles size={17} aria-hidden="true" />
+            <span>{isGenerating ? "Generating" : "Generate"}</span>
+          </button>
+          {generationCandidate ? (
+            <div className="generation-chip" role="status">
+              <span>{generationSummaryStatus(generationCandidate.summary)}</span>
+              <button
+                className="icon-button compact"
+                onClick={applyGenerationCandidate}
+                disabled={isApplyingGenerated || isGenerating || isOpening || isScanning}
+                title="Apply generated overlay"
+              >
+                <CheckCircle2 size={15} aria-hidden="true" />
+                <span>{isApplyingGenerated ? "Applying" : "Apply"}</span>
+              </button>
+            </div>
+          ) : null}
           <label className="search-box">
             <Search size={16} aria-hidden="true" />
             <input placeholder="Search" disabled />
@@ -770,6 +874,25 @@ function validationStatusText(validation: ValidationReport, warningIssues: Valid
 
 function scanSummaryStatus(summary: ScanSummary): string {
   return `${summary.scannedFiles} files (${summary.changedFiles} changed, ${summary.deletedFiles} deleted)`;
+}
+
+function generationSummaryStatus(summary: GenerationSummary): string {
+  const parts = [
+    countLabel(summary.systemsAdded, "system"),
+    countLabel(summary.containersAdded, "container"),
+    countLabel(summary.componentsAdded, "component"),
+    countLabel(summary.relationshipsAdded, "relationship"),
+    countLabel(summary.externalSystemsAdded, "external system"),
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.length > 0 ? parts.join(", ") : "No generated changes";
+}
+
+function countLabel(count: number, singular: string): string | null {
+  if (count === 0) {
+    return null;
+  }
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
 function errorStatus(error: unknown, fallback: string): string {

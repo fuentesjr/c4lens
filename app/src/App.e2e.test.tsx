@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleModel } from "./model/sample";
-import type { CodeRef, EffectiveModel, ScanSummary, ValidationReport } from "./model/types";
+import type { CodeRef, EffectiveModel, GenerationDiff, ScanSummary, ValidationReport } from "./model/types";
 
 type MockFlowNode = {
   id: string;
@@ -44,6 +44,8 @@ const ipcMocks = vi.hoisted(() => {
   return {
     state,
     fetchActiveModel: vi.fn<() => Promise<EffectiveModel | null>>(async () => null),
+    applyGenerated: vi.fn<() => Promise<void>>(async () => {}),
+    generateModel: vi.fn<() => Promise<GenerationDiff>>(async () => generationDiffFor()),
     getElementCode: vi.fn<(slug: string) => Promise<CodeRef | null>>(async () => null),
     isTauriDesktop: vi.fn(() => false),
     listenToModelEvents: vi.fn(async (handlers: NonNullable<typeof state.handlers>) => {
@@ -59,7 +61,9 @@ const ipcMocks = vi.hoisted(() => {
 });
 
 vi.mock("./ipc/client", () => ({
+  applyGenerated: ipcMocks.applyGenerated,
   fetchActiveModel: ipcMocks.fetchActiveModel,
+  generateModel: ipcMocks.generateModel,
   getElementCode: ipcMocks.getElementCode,
   isTauriDesktop: ipcMocks.isTauriDesktop,
   listenToModelEvents: ipcMocks.listenToModelEvents,
@@ -185,6 +189,10 @@ function resetDomAndRoute() {
   window.location.hash = "";
   ipcMocks.fetchActiveModel.mockReset();
   ipcMocks.fetchActiveModel.mockResolvedValue(null);
+  ipcMocks.applyGenerated.mockReset();
+  ipcMocks.applyGenerated.mockResolvedValue(undefined);
+  ipcMocks.generateModel.mockReset();
+  ipcMocks.generateModel.mockResolvedValue(generationDiffFor());
   ipcMocks.getElementCode.mockReset();
   ipcMocks.getElementCode.mockResolvedValue(null);
   ipcMocks.isTauriDesktop.mockReset();
@@ -910,6 +918,132 @@ describe("App scan behavior", () => {
     cleanup();
   });
 
+  it("generates a candidate and applies it with accept-all preconditions", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    const candidate = generationDiffFor({
+      summary: {
+        systemsAdded: 0,
+        containersAdded: 1,
+        componentsAdded: 2,
+        relationshipsAdded: 1,
+        externalSystemsAdded: 0,
+      },
+    });
+    ipcMocks.generateModel.mockResolvedValueOnce(candidate);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const generateButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Generate",
+    );
+    expect(generateButton).not.toBeNull();
+
+    await act(async () => {
+      generateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.generateModel).toHaveBeenCalledWith({ scanFirst: true });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Generated 1 container");
+    expect(container.querySelector(".topbar")?.textContent).toContain("1 container, 2 components, 1 relationship");
+
+    const applyButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Apply",
+    );
+    expect(applyButton).not.toBeNull();
+
+    await act(async () => {
+      applyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.applyGenerated).toHaveBeenCalledWith({
+      generationId: candidate.candidateId,
+      expectedAuthoredSha: candidate.baseAuthoredSha,
+      expectedOverlaySha: candidate.baseOverlaySha,
+      expectedModelSourceSha: candidate.modelSourceSha,
+      expectedIndexScanToken: candidate.indexScanToken,
+      expectedSchemaVersion: candidate.schemaVersion,
+      selection: { acceptAll: true },
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Applied generated model");
+    expect(container.querySelector(".topbar")?.textContent).not.toContain("1 container, 2 components");
+
+    cleanup();
+  });
+
+  it("surfaces generation failures without unloading the current canvas", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.generateModel.mockRejectedValueOnce(new Error("generation failed"));
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+    const labelsBeforeFailure = getCanvasLabels(container);
+
+    const generateButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Generate",
+    );
+    expect(generateButton).not.toBeNull();
+
+    await act(async () => {
+      generateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(getCanvasLabels(container)).toEqual(labelsBeforeFailure);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("generation failed");
+    expect(container.querySelector(".topbar")?.textContent).not.toContain("Apply");
+
+    cleanup();
+  });
+
+  it("clears an older generation candidate when a regeneration attempt fails", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.generateModel
+      .mockResolvedValueOnce(
+        generationDiffFor({
+          summary: {
+            systemsAdded: 0,
+            containersAdded: 1,
+            componentsAdded: 0,
+            relationshipsAdded: 0,
+            externalSystemsAdded: 0,
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new Error("regeneration failed"));
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const generateButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Generate",
+    );
+    expect(generateButton).not.toBeNull();
+
+    await act(async () => {
+      generateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+    expect(container.querySelector(".topbar")?.textContent).toContain("1 container");
+    expect(container.querySelector(".topbar")?.textContent).toContain("Apply");
+
+    await act(async () => {
+      generateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("regeneration failed");
+    expect(container.querySelector(".topbar")?.textContent).not.toContain("1 container");
+    expect(container.querySelector(".topbar")?.textContent).not.toContain("Apply");
+
+    cleanup();
+  });
+
   it("surfaces scan failures without unloading the current canvas", async () => {
     ipcMocks.isTauriDesktop.mockReturnValue(true);
     ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
@@ -1144,6 +1278,42 @@ function scanSummaryFor(overrides: Partial<ScanSummary> = {}): ScanSummary {
     imports: 0,
     durationMs: 12,
     warnings: [],
+    ...overrides,
+  };
+}
+
+function generationDiffFor(overrides: Partial<GenerationDiff> = {}): GenerationDiff {
+  return {
+    candidateId: "generation-candidate-1",
+    repo: sampleModel.repo,
+    overlayPath: "c4/model.generated.yml",
+    baseAuthoredSha: null,
+    baseOverlaySha: null,
+    modelSourceSha: "model-source-sha",
+    indexScanToken: "scan-token",
+    schemaVersion: "schema-version",
+    afterYaml: "name: Generated\n",
+    summary: {
+      systemsAdded: 0,
+      containersAdded: 1,
+      componentsAdded: 0,
+      relationshipsAdded: 0,
+      externalSystemsAdded: 0,
+    },
+    changes: [
+      {
+        id: "container:invoice_api",
+        kind: "add",
+        target: "container",
+        slug: "invoice_api",
+        selectedByDefault: true,
+      },
+    ],
+    validation: {
+      ok: true,
+      sourceSha: "generated-source-sha",
+      issues: [],
+    },
     ...overrides,
   };
 }
