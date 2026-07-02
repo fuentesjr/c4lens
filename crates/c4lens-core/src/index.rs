@@ -645,27 +645,99 @@ fn extract_rust_imports(
         return;
     }
 
-    let normalized = target.trim_end_matches("::*").to_string();
-    if normalized.is_empty() {
-        return;
+    for normalized in expand_rust_import_targets(target) {
+        if normalized.is_empty() {
+            continue;
+        }
+
+        let kind = if is_rust_internal_import_path(&normalized) {
+            "internal"
+        } else {
+            "external"
+        };
+        let target_path = if kind == "internal" {
+            resolve_rust_internal_import_target(repo_root, source_path, &normalized)
+        } else {
+            None
+        };
+        imports.push(ParsedImport {
+            target_module: normalized.clone(),
+            target_path,
+            kind,
+        });
     }
-    let kind = if normalized.starts_with("crate::") || normalized.starts_with("self::") {
-        "internal"
-    } else if normalized.starts_with("super::") {
-        "internal"
+}
+
+fn expand_rust_import_targets(target: &str) -> Vec<String> {
+    let normalized = if target.contains('{') {
+        target.trim().to_string()
     } else {
-        "external"
+        normalize_rust_import_target(target)
     };
-    let target_path = if kind == "internal" {
-        resolve_rust_internal_import_target(repo_root, source_path, &normalized)
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let Some((prefix, body)) = split_rust_group_import(&normalized) else {
+        return vec![normalized];
+    };
+
+    if !is_rust_internal_import_path(prefix) || body.contains('{') || body.contains('}') {
+        return vec![normalized];
+    }
+
+    let targets = body
+        .split(',')
+        .filter_map(|raw_item| {
+            let item = normalize_rust_import_target(raw_item);
+            if item.is_empty() || item.starts_with('*') {
+                return None;
+            }
+
+            if item == "self" {
+                Some(prefix.trim_end_matches("::").to_string())
+            } else {
+                Some(format!("{prefix}{item}"))
+            }
+        })
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        vec![normalized]
     } else {
-        None
-    };
-    imports.push(ParsedImport {
-        target_module: normalized.clone(),
-        target_path,
-        kind,
-    });
+        targets
+    }
+}
+
+fn normalize_rust_import_target(target: &str) -> String {
+    let without_alias = target
+        .trim()
+        .split_once(" as ")
+        .map_or_else(|| target.trim(), |(path, _alias)| path.trim());
+    without_alias.trim_end_matches("::*").trim().to_string()
+}
+
+fn split_rust_group_import(target: &str) -> Option<(&str, &str)> {
+    let open_brace = target.find('{')?;
+    if !target.ends_with('}') {
+        return None;
+    }
+
+    let prefix = &target[..open_brace];
+    if prefix.is_empty() {
+        return None;
+    }
+
+    let body = &target[open_brace + 1..target.len() - 1];
+    Some((prefix, body))
+}
+
+fn is_rust_internal_import_path(module_path: &str) -> bool {
+    module_path == "crate"
+        || module_path.starts_with("crate::")
+        || module_path == "self"
+        || module_path.starts_with("self::")
+        || module_path == "super"
+        || module_path.starts_with("super::")
 }
 
 fn resolve_rust_internal_import_target(
@@ -1745,6 +1817,58 @@ systems:
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].from_file, "src/api/mod.rs");
         assert_eq!(edges[0].to_file, "src/domain/mod.rs");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_resolves_grouped_rust_crate_import_edges_to_repo_files() {
+        let root = fresh_test_dir("scan-rust-grouped-import-edges");
+        let index_root = fresh_test_dir("scan-rust-grouped-import-edges-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Scan Repo
+systems:
+  app:
+    name: App
+"#,
+        );
+        write_file(
+            &root,
+            "src/api/mod.rs",
+            "use crate::{domain::Thing, jobs::Job, missing::Ghost};\npub fn handle() {}\n",
+        );
+        write_file(&root, "src/domain/mod.rs", "pub struct Thing;\n");
+        write_file(&root, "src/jobs/mod.rs", "pub struct Job;\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let edges =
+            list_internal_crate_import_edges(&repo, Some(&db_path)).expect("list import edges");
+
+        let edge_pairs = edges
+            .iter()
+            .map(|edge| (edge.from_file.as_str(), edge.to_file.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edge_pairs,
+            [
+                ("src/api/mod.rs", "src/domain/mod.rs"),
+                ("src/api/mod.rs", "src/jobs/mod.rs"),
+            ]
+        );
 
         cleanup(index_root);
         cleanup(root);

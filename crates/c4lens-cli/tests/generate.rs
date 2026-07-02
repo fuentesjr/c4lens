@@ -363,6 +363,45 @@ fn generate_scan_with_rust_internal_imports_returns_generated_component_relation
 }
 
 #[test]
+fn generate_scan_with_grouped_rust_imports_returns_generated_component_relationships() {
+    let root = fresh_test_dir("generate-rust-grouped-import-relationships");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/domain")).expect("create domain");
+    fs::create_dir_all(repo.join("src/jobs")).expect("create jobs");
+    fs::create_dir_all(repo.join("src/web")).expect("create web");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+    fs::write(
+        repo.join("src/web/mod.rs"),
+        "use crate::{domain::Thing, jobs::Job};\npub fn handle() {}\n",
+    )
+    .expect("write web source");
+    fs::write(repo.join("src/domain/mod.rs"), "pub struct Thing;\n").expect("write domain source");
+    fs::write(repo.join("src/jobs/mod.rs"), "pub struct Job;\n").expect("write jobs source");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--scan", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("from: web"));
+    assert!(generated_yaml.contains("to: domain"));
+    assert!(generated_yaml.contains("to: jobs"));
+    assert_eq!(generated_yaml.matches("description: Imports").count(), 2);
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_scan_with_rust_super_imports_returns_generated_component_relationships() {
     let root = fresh_test_dir("generate-rust-super-import-relationships");
     let repo = root.join("repo");
