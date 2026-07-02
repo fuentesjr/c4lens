@@ -46,6 +46,30 @@ pub fn load_effective_model_from_repo_recovering_generated_overlay(
     }
 }
 
+pub fn validate_generated_overlay_yaml(
+    repo: RepoHandle,
+    generated_yaml: &str,
+) -> Result<(), CommandError> {
+    let repo_root = canonical_repo_root(&repo)?;
+    let authored = load_optional_model_source(&repo_root, AUTHORED_MODEL_PATH, false)?;
+    let generated = Some(load_model_source_from_contents(
+        GENERATED_MODEL_PATH,
+        generated_yaml,
+        true,
+    )?);
+
+    build_effective_model(
+        repo,
+        &repo_root,
+        ModelInputs {
+            authored,
+            generated,
+        },
+    )?;
+
+    Ok(())
+}
+
 fn canonical_repo_root(repo: &RepoHandle) -> Result<PathBuf, CommandError> {
     Path::new(&repo.root_path).canonicalize().map_err(|error| {
         CommandError::with_details(
@@ -208,7 +232,20 @@ fn load_optional_model_source(
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let value = parse_plain_yaml_value(&contents, relative_path)?;
+
+    Ok(Some(load_model_source_from_contents(
+        relative_path,
+        &contents,
+        generated,
+    )?))
+}
+
+fn load_model_source_from_contents(
+    relative_path: &'static str,
+    contents: &str,
+    generated: bool,
+) -> Result<ModelSource, CommandError> {
+    let value = parse_plain_yaml_value(contents, relative_path)?;
     let mut model: Model = serde_yaml_ng::from_value(value).map_err(|error| {
         CommandError::with_details(
             "model.invalid",
@@ -218,11 +255,11 @@ fn load_optional_model_source(
     })?;
     normalize_model(&mut model, generated);
 
-    Ok(Some(ModelSource {
+    Ok(ModelSource {
         relative_path,
-        contents,
+        contents: contents.to_string(),
         model,
-    }))
+    })
 }
 
 fn control_file_is_present(path: &Path) -> Result<bool, CommandError> {

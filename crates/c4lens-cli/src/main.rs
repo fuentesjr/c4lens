@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use c4lens_core::{
     acquire_repo_write_lock, build_minimal_generated_model, load_effective_model_from_repo,
-    render_generated_model_yaml, repo_handle_from_path, scan_repo, CommandError, RepoHandle,
-    ScanOptions, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH, SCHEMA_PATH,
+    render_generated_model_yaml, repo_handle_from_path, scan_repo, validate_generated_overlay_yaml,
+    CommandError, RepoHandle, ScanOptions, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH,
+    SCHEMA_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -344,6 +345,7 @@ fn write_generated_overlay_with_lock(
 
     let repo_root = canonicalize_repo_root(&repo.root_path)?;
     let (generated_dir, generated_path) = validate_generated_overlay_paths(&repo_root)?;
+    validate_generated_overlay_yaml(repo.clone(), generated_yaml)?;
 
     write_schema_json_if_missing(&generated_dir)?;
     write_generated_overlay_to_path(&generated_path, generated_yaml)

@@ -87,6 +87,72 @@ fn generate_write_preserves_existing_schema_json() {
     cleanup(repo);
 }
 
+#[test]
+fn generate_write_validates_candidate_before_replacing_existing_overlay() {
+    let repo = fresh_test_dir("generate-write-invalid-candidate");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Existing
+actors:
+  api_service:
+    name: API Service Actor
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+    let old_overlay = "name: Old Generated\ngenerated: true\n";
+    let generated_path = repo.join("c4/model.generated.yml");
+    fs::write(&generated_path, old_overlay).expect("write old generated overlay");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(4);
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
+
+    assert_eq!(payload["issues"][0]["code"], "semantic.duplicate_slug");
+    assert_eq!(
+        fs::read_to_string(&generated_path).expect("old generated overlay"),
+        old_overlay
+    );
+    assert!(!repo.join("c4/schema.json").exists());
+
+    cleanup(repo);
+}
+
+#[test]
+fn generate_write_validates_candidate_without_reading_existing_overlay_contents() {
+    let repo = fresh_test_dir("generate-write-ignores-old-invalid-overlay");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(repo.join("c4/model.generated.yml"), "name: [unterminated\n")
+        .expect("write invalid generated overlay");
+    fs::write(repo.join("requirements.txt"), "flask==3.0\n").expect("write requirements");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+
+    assert_eq!(payload["ok"], true);
+    let generated =
+        fs::read_to_string(repo.join("c4/model.generated.yml")).expect("generated overlay");
+    assert!(generated.contains("python:"));
+    assert!(generated.contains("tech: Python"));
+
+    cleanup(repo);
+}
+
 #[cfg(unix)]
 #[test]
 fn generate_write_rejects_symlinked_schema_json_without_writing_overlay() {
