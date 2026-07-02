@@ -30,35 +30,49 @@ pub fn build_minimal_generated_model_from_authored_system(
 ) -> Model {
     let root_path = Path::new(&repo.root_path);
     let mut containers = Vec::new();
+    let mut has_root_manifest = false;
 
     if let Some(container) = detect_root_cargo_manifest(root_path, &repo.name) {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) = detect_root_package_json_manifest(root_path, &repo.name) {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) = detect_root_go_mod_manifest(root_path, &repo.name) {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) = detect_root_java_manifest(root_path, &repo.name) {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) = detect_root_pyproject_toml_manifest(root_path, &repo.name) {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) =
         detect_root_requirements_txt_manifest(root_path, root_path.join("pyproject.toml").is_file())
     {
         containers.push(container);
+        has_root_manifest = true;
     }
 
     if let Some(container) = detect_root_gemfile_manifest(root_path) {
         containers.push(container);
+        has_root_manifest = true;
+    }
+
+    if !has_root_manifest {
+        if let Some(container) = detect_root_dockerfile_manifest(root_path) {
+            containers.push(container);
+        }
     }
 
     let mut systems = BTreeMap::new();
@@ -988,6 +1002,21 @@ fn detect_root_gemfile_manifest(repo_root: &Path) -> Option<GeneratedContainer> 
     })
 }
 
+fn detect_root_dockerfile_manifest(repo_root: &Path) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("Dockerfile");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    Some(GeneratedContainer {
+        slug: "dockerfile".to_string(),
+        name: "Dockerfile".to_string(),
+        code: ".".to_string(),
+        tech: Some("Docker".to_string()),
+        dependency_targets: BTreeMap::new(),
+    })
+}
+
 fn gemfile_declares_gem(text: &str, gem_name: &str) -> bool {
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim_start();
@@ -1431,6 +1460,32 @@ version = "0.1.0"
         assert_eq!(container.base.tech.as_deref(), Some("Node.js"));
         assert_eq!(container.base.code.as_deref(), Some("app"));
         assert_eq!(container.base.name, "Acme Web Client");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_from_root_dockerfile_fallback() {
+        let root = fresh_test_dir("generated-dockerfile-fallback");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::write(repo_dir.join("Dockerfile"), "FROM alpine:3.20\n").expect("write dockerfile");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("dockerfile")
+            .expect("generated dockerfile container");
+
+        assert_eq!(generated_system.containers.len(), 1);
+        assert_eq!(container.base.name, "Dockerfile");
+        assert_eq!(container.base.tech.as_deref(), Some("Docker"));
+        assert_eq!(container.base.code.as_deref(), Some("."));
 
         cleanup(root);
     }

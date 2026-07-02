@@ -532,6 +532,62 @@ rootProject.name = 'orders-app'
 }
 
 #[test]
+fn generate_with_root_dockerfile_returns_fallback_generated_container() {
+    let root = fresh_test_dir("generate-root-dockerfile");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::write(repo.join("Dockerfile"), "FROM alpine:3.20\n").expect("write dockerfile");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("dockerfile:"));
+    assert!(generated_yaml.contains("name: Dockerfile"));
+    assert!(generated_yaml.contains("tech: Docker"));
+    assert!(generated_yaml.contains("code: ."));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_dockerfile_and_manifest_does_not_duplicate_container() {
+    let root = fresh_test_dir("generate-root-dockerfile-covered");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+    fs::write(repo.join("Dockerfile"), "FROM rust:1.80\n").expect("write dockerfile");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("billing_service:"));
+    assert!(generated_yaml.contains("tech: Rust"));
+    assert!(!generated_yaml.contains("dockerfile:"));
+    assert!(!generated_yaml.contains("tech: Docker"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_with_package_json_dependencies_returns_external_targets_and_relationships() {
     let root = fresh_test_dir("generate-package-json-dependencies");
     let repo = root.join("repo");
