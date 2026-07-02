@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
@@ -142,17 +142,17 @@ fn fresh_test_dir(name: &str) -> PathBuf {
     root
 }
 
-fn write_model(repo: &PathBuf, contents: &str) {
+fn write_model(repo: &Path, contents: &str) {
     write_file(repo, "c4/model.yml", contents);
 }
 
-fn write_file(repo: &PathBuf, relative_path: &str, contents: &str) {
+fn write_file(repo: &Path, relative_path: &str, contents: &str) {
     let path = repo.join(relative_path);
     fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
     fs::write(path, contents).expect("write file");
 }
 
-fn write_file_bytes(repo: &PathBuf, relative_path: &str, contents: &[u8]) {
+fn write_file_bytes(repo: &Path, relative_path: &str, contents: &[u8]) {
     let path = repo.join(relative_path);
     fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
     fs::write(path, contents).expect("write bytes");

@@ -482,12 +482,9 @@ fn extract_file_artifacts(
         if clean_line.trim().is_empty() {
             continue;
         }
-        match lang {
-            "rust" => {
-                extract_rust_symbols(&mut symbols, line_no, clean_line);
-                extract_rust_imports(&mut imports, repo_root, &file.path, line_no, clean_line);
-            }
-            _ => {}
+        if lang == "rust" {
+            extract_rust_symbols(&mut symbols, line_no, clean_line);
+            extract_rust_imports(&mut imports, repo_root, &file.path, line_no, clean_line);
         }
     }
 
@@ -598,9 +595,7 @@ fn extract_named_construct<'a>(
         }
     }
 
-    let Some(position) = keyword_index else {
-        return None;
-    };
+    let position = keyword_index?;
     let candidate = tokens.get(position + 1)?;
     let name = candidate
         .split(['(', '<', '{', ':', '=', ';'])
@@ -1167,7 +1162,7 @@ fn collect_scan_files(
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
-        .filter_entry(|entry| should_scan_entry(entry));
+        .filter_entry(should_scan_entry);
 
     for entry in builder.build() {
         let entry = match entry {
@@ -1548,7 +1543,7 @@ fn has_nul_in_prefix(bytes: &[u8], max: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rusqlite::{params, Connection};
@@ -2569,13 +2564,13 @@ systems:
         root
     }
 
-    fn write_file(root: &PathBuf, relative_path: &str, contents: &str) {
+    fn write_file(root: &Path, relative_path: &str, contents: &str) {
         let path = root.join(relative_path);
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(path, contents).expect("write file");
     }
 
-    fn write_file_bytes(root: &PathBuf, relative_path: &str, contents: &[u8]) {
+    fn write_file_bytes(root: &Path, relative_path: &str, contents: &[u8]) {
         let path = root.join(relative_path);
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(path, contents).expect("write file bytes");

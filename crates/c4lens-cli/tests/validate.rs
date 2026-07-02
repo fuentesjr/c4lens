@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
@@ -514,12 +514,12 @@ systems:
     cleanup(repo);
 }
 
-fn write_model(repo: &PathBuf, contents: &str) {
+fn write_model(repo: &Path, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.yml"), contents).expect("write model");
 }
 
-fn write_generated_model(repo: &PathBuf, contents: &str) {
+fn write_generated_model(repo: &Path, contents: &str) {
     fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
     fs::write(repo.join("c4/model.generated.yml"), contents).expect("write generated model");
 }

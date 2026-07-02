@@ -1078,7 +1078,7 @@ fn detect_root_docker_compose_services_manifest(repo_root: &Path) -> Vec<Generat
             Some((service_name_node.as_str()?, service_def))
         })
         .collect::<Vec<_>>();
-    service_names.sort_by(|(left, _), (right, _)| left.cmp(right));
+    service_names.sort_by_key(|(service_name, _)| *service_name);
 
     service_names
         .into_iter()

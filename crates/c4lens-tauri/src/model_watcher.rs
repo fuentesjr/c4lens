@@ -202,7 +202,7 @@ fn snapshot_control_file(path: &Path) -> ControlFileSnapshot {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -291,7 +291,7 @@ mod tests {
         root
     }
 
-    fn write_model(root: &PathBuf, contents: &str) {
+    fn write_model(root: &Path, contents: &str) {
         fs::create_dir_all(root.join("c4")).expect("create c4 dir");
         fs::write(root.join("c4/model.yml"), contents).expect("write model");
     }

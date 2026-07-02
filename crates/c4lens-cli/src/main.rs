@@ -435,7 +435,7 @@ fn read_generated_overlay_from_path(
         ));
     }
 
-    fs::read_to_string(&generated_path)
+    fs::read_to_string(generated_path)
         .map(Some)
         .map_err(|error| {
             CommandError::with_details(
@@ -457,7 +457,7 @@ fn write_schema_json_if_missing(generated_dir: &Path) -> Result<(), CommandError
 }
 
 fn schema_json_exists(schema_path: &Path) -> Result<bool, CommandError> {
-    match fs::symlink_metadata(&schema_path) {
+    match fs::symlink_metadata(schema_path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 return Err(CommandError::with_details(
@@ -596,7 +596,7 @@ fn validate_generated_overlay_paths(repo_root: &Path) -> Result<(PathBuf, PathBu
             serde_json::json!({ "path": "c4", "error": error.to_string() }),
         )
     })?;
-    if !canonical_generated_dir.starts_with(&repo_root) {
+    if !canonical_generated_dir.starts_with(repo_root) {
         return Err(CommandError::with_details(
             "repo.path_denied",
             "Generated model directory resolves outside the repository.",
@@ -669,7 +669,7 @@ fn write_generated_overlay_to_path(
     }
     drop(temp_file);
 
-    if let Err(error) = fs::rename(&temp_path, &generated_path) {
+    if let Err(error) = fs::rename(&temp_path, generated_path) {
         let _ = fs::remove_file(&temp_path);
         return Err(CommandError::with_details(
             "fs.write_failed",

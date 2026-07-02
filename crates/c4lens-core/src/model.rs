@@ -47,18 +47,13 @@ pub struct RepoHandle {
 
 pub type Slug = String;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lifecycle {
+    #[default]
     Live,
     Planned,
     Deprecated,
-}
-
-impl Default for Lifecycle {
-    fn default() -> Self {
-        Self::Live
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,9 +65,10 @@ pub enum ElementType {
     Component,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerKind {
+    #[default]
     Service,
     App,
     Store,
@@ -81,24 +77,13 @@ pub enum ContainerKind {
     Job,
 }
 
-impl Default for ContainerKind {
-    fn default() -> Self {
-        Self::Service
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
+    #[default]
     Authored,
     Generated,
     Merged,
-}
-
-impl Default for SourceKind {
-    fn default() -> Self {
-        Self::Authored
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

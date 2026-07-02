@@ -584,7 +584,7 @@ fn validate_generated_overlay_paths(repo_root: &Path) -> Result<(PathBuf, PathBu
             serde_json::json!({ "path": "c4", "error": error.to_string() }),
         )
     })?;
-    if !canonical_generated_dir.starts_with(&repo_root) {
+    if !canonical_generated_dir.starts_with(repo_root) {
         return Err(CommandError::with_details(
             "repo.path_denied",
             "Generated model directory resolves outside the repository.",
@@ -1731,7 +1731,7 @@ systems:
         assert_eq!(first.summary, second.summary);
         assert_eq!(first.candidate_id, second.candidate_id);
         assert!(first.index_scan_token.is_empty());
-        assert!(first.changes.len() >= 1);
+        assert!(!first.changes.is_empty());
 
         cleanup(root);
     }

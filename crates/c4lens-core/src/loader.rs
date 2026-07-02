@@ -138,7 +138,7 @@ fn build_effective_model(
     let elements_by_slug = flatten_elements(&model, &element_sources)?;
     validate_relationships(&indexed_relationships, &elements_by_slug)?;
     issues.extend(validate_external_system_containers(&model));
-    issues.extend(validate_code_paths(&repo_root, &elements_by_slug)?);
+    issues.extend(validate_code_paths(repo_root, &elements_by_slug)?);
 
     Ok(EffectiveModel {
         repo,
@@ -1771,12 +1771,14 @@ fn reject_anchor_and_alias_tokens(contents: &str) -> Result<(), CommandError> {
                         ));
                     }
                 }
-                '|' | '>' if !in_single_quote && !in_double_quote => {
-                    if is_yaml_block_scalar_token(line, &chars, char_index) {
-                        starts_block_scalar = Some(block_scalar_parent_indent_for_line(
-                            line, &chars, char_index,
-                        ));
-                    }
+                '|' | '>'
+                    if !in_single_quote
+                        && !in_double_quote
+                        && is_yaml_block_scalar_token(line, &chars, char_index) =>
+                {
+                    starts_block_scalar = Some(block_scalar_parent_indent_for_line(
+                        line, &chars, char_index,
+                    ));
                 }
                 _ => {}
             }
@@ -1845,9 +1847,7 @@ fn plain_scalar_parent_indent_for_line(line: &str, chars: &[(usize, char)]) -> O
     }
 
     let after_indent = &significant[line_indent..];
-    let Some(after_dash) = after_indent.strip_prefix('-') else {
-        return None;
-    };
+    let after_dash = after_indent.strip_prefix('-')?;
     let separation_spaces = after_dash
         .chars()
         .take_while(|character| *character == ' ')
@@ -2040,7 +2040,7 @@ fn previous_token_is_yaml_tag(line: &str, chars: &[(usize, char)], marker_index:
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::{
@@ -3856,12 +3856,12 @@ systems:
         cleanup(root);
     }
 
-    fn write_model(root: &PathBuf, contents: &str) {
+    fn write_model(root: &Path, contents: &str) {
         fs::create_dir_all(root.join("c4")).expect("create c4 dir");
         fs::write(root.join("c4/model.yml"), contents).expect("write model");
     }
 
-    fn write_generated_model(root: &PathBuf, contents: &str) {
+    fn write_generated_model(root: &Path, contents: &str) {
         fs::create_dir_all(root.join("c4")).expect("create c4 dir");
         fs::write(root.join("c4/model.generated.yml"), contents).expect("write generated model");
     }
