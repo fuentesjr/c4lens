@@ -166,7 +166,11 @@ JOIN files AS target_files
  AND target_files.path = imports.target_path
 WHERE source_files.repo_id = ?1
   AND imports.kind = 'internal'
-  AND imports.target_module LIKE 'crate::%'
+  AND (
+    imports.target_module LIKE 'crate::%'
+    OR imports.target_module LIKE 'self::%'
+    OR imports.target_module LIKE 'super::%'
+  )
   AND imports.target_path IS NOT NULL
 ORDER BY source_files.path, target_files.path
 "#,
