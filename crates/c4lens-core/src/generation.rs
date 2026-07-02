@@ -756,40 +756,94 @@ fn package_json_dependency_targets_from_manifest(
     dependencies
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PackageJsonDependencyKind {
+    ExternalSystem,
+    StoreContainer,
+}
+
+const PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, PackageJsonDependencyKind)] = &[
+    ("aws-sdk", "aws", PackageJsonDependencyKind::ExternalSystem),
+    ("pg", "postgres", PackageJsonDependencyKind::StoreContainer),
+    (
+        "postgres",
+        "postgres",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    (
+        "postgresql",
+        "postgres",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    ("mysql", "mysql", PackageJsonDependencyKind::StoreContainer),
+    ("mysql2", "mysql", PackageJsonDependencyKind::StoreContainer),
+    ("redis", "redis", PackageJsonDependencyKind::StoreContainer),
+    (
+        "mongodb",
+        "mongodb",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    (
+        "mongo",
+        "mongodb",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    (
+        "sqlite",
+        "sqlite",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    (
+        "rusqlite",
+        "sqlite",
+        PackageJsonDependencyKind::StoreContainer,
+    ),
+    (
+        "stripe",
+        "stripe",
+        PackageJsonDependencyKind::ExternalSystem,
+    ),
+    (
+        "sendgrid",
+        "sendgrid",
+        PackageJsonDependencyKind::ExternalSystem,
+    ),
+    (
+        "twilio",
+        "twilio",
+        PackageJsonDependencyKind::ExternalSystem,
+    ),
+    (
+        "sentry",
+        "sentry",
+        PackageJsonDependencyKind::ExternalSystem,
+    ),
+];
+
+const PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, PackageJsonDependencyKind)] = &[(
+    "@aws-sdk/",
+    "aws",
+    PackageJsonDependencyKind::ExternalSystem,
+)];
+
 fn normalize_package_json_dependency_name(
     dependency_name: &str,
 ) -> Option<(String, PackageJsonDependencyKind)> {
     let normalized = dependency_name.to_ascii_lowercase();
-    if normalized == "aws-sdk" || normalized.starts_with("@aws-sdk/") {
-        return Some(("aws".to_string(), PackageJsonDependencyKind::ExternalSystem));
+
+    for (prefix, slug, kind) in PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS {
+        if normalized.starts_with(prefix) {
+            return Some(((*slug).to_string(), *kind));
+        }
     }
 
-    match normalized.as_str() {
-        "pg" | "postgres" | "postgresql" => Some((
-            "postgres".to_string(),
-            PackageJsonDependencyKind::StoreContainer,
-        )),
-        "mysql" | "mysql2" => Some((
-            "mysql".to_string(),
-            PackageJsonDependencyKind::StoreContainer,
-        )),
-        "redis" => Some((
-            "redis".to_string(),
-            PackageJsonDependencyKind::StoreContainer,
-        )),
-        "mongodb" | "mongo" => Some((
-            "mongodb".to_string(),
-            PackageJsonDependencyKind::StoreContainer,
-        )),
-        "sqlite" | "rusqlite" => Some((
-            "sqlite".to_string(),
-            PackageJsonDependencyKind::StoreContainer,
-        )),
-        "stripe" | "sendgrid" | "twilio" | "sentry" => {
-            Some((normalized, PackageJsonDependencyKind::ExternalSystem))
+    for (name, slug, kind) in PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS {
+        if normalized == *name {
+            return Some(((*slug).to_string(), *kind));
         }
-        _ => None,
     }
+
+    None
 }
 
 fn resolve_generated_system_slug(
@@ -844,12 +898,6 @@ fn dependency_display_name(slug: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PackageJsonDependencyKind {
-    ExternalSystem,
-    StoreContainer,
-}
-
 fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
     let manifest_path = repo_root.join("Cargo.toml");
     if !manifest_path.is_file() {
@@ -857,7 +905,8 @@ fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<Gener
     }
 
     let manifest_text = fs::read_to_string(&manifest_path).ok()?;
-    let name = parse_manifest_name_in_section(&manifest_text, "package", "name", repo_name);
+    let name = parse_toml_string_in_table(&manifest_text, "package", "name")
+        .unwrap_or_else(|| repo_name.to_string());
     let slug = slugify(&name);
     let code = if repo_root.join("src").is_dir() {
         "src".to_string()
@@ -957,7 +1006,8 @@ fn detect_root_pyproject_toml_manifest(
     }
 
     let manifest_text = fs::read_to_string(&manifest_path).ok()?;
-    let name = parse_manifest_name_in_section(&manifest_text, "project", "name", repo_name);
+    let name = parse_toml_string_in_table(&manifest_text, "project", "name")
+        .unwrap_or_else(|| repo_name.to_string());
 
     let code = if repo_root.join("src").is_dir() {
         "src".to_string()
@@ -1179,63 +1229,9 @@ fn gemfile_declares_gem(text: &str, gem_name: &str) -> bool {
     false
 }
 
-fn parse_manifest_name_in_section(text: &str, section: &str, key: &str, fallback: &str) -> String {
-    let section_header = format!("[{section}]");
-    let mut in_section = false;
-
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        if line == section_header {
-            in_section = true;
-            continue;
-        }
-
-        if line.starts_with('[') {
-            in_section = false;
-            continue;
-        }
-
-        if !in_section {
-            continue;
-        }
-
-        if let Some(raw_name) = parse_toml_string_field(line, key) {
-            return raw_name;
-        }
-    }
-
-    fallback.to_string()
-}
-
-fn parse_toml_string_field(line: &str, key: &str) -> Option<String> {
-    let mut parts = line.splitn(2, '=');
-    let field = parts.next()?.trim();
-    if field != key {
-        return None;
-    }
-
-    let remainder = parts.next()?.trim();
-    if let Some(value) = remainder
-        .trim_matches(|c| c == '"')
-        .strip_prefix('\'')
-        .and_then(|rest| rest.strip_suffix('\''))
-    {
-        return Some(value.to_string());
-    }
-
-    let value = remainder
-        .trim_start_matches('"')
-        .trim_end_matches('"')
-        .trim_matches('\'');
-    if !value.is_empty() {
-        return Some(value.to_string());
-    }
-
-    None
+fn parse_toml_string_in_table(text: &str, table: &str, key: &str) -> Option<String> {
+    let manifest: toml::Value = toml::from_str(text).ok()?;
+    manifest.get(table)?.get(key)?.as_str().map(str::to_string)
 }
 
 fn slugify(value: &str) -> String {
@@ -1416,6 +1412,37 @@ version = "0.1.0"
     }
 
     #[test]
+    fn build_generated_model_from_root_cargo_manifest_uses_structured_toml_name() {
+        let root = fresh_test_dir("generated-cargo-structured-toml");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("Cargo.toml"),
+            r#"[package]
+name = "cool # service"
+version = "0.1.0"
+"#,
+        )
+        .expect("write cargo manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("cool_service")
+            .expect("generated cargo container");
+
+        assert_eq!(container.base.name, "Cool Service");
+
+        cleanup(root);
+    }
+
+    #[test]
     fn rendered_manifest_model_roundtrips_through_loader_schema() {
         let root = fresh_test_dir("generated-manifest-roundtrip");
         let repo_dir = root.join("repo");
@@ -1516,6 +1543,39 @@ version = "0.1.0"
         assert_eq!(container.base.tech.as_deref(), Some("Node.js"));
         assert_eq!(container.base.code.as_deref(), Some("app"));
         assert_eq!(container.base.name, "Acme Web Client");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_from_root_pyproject_manifest_uses_structured_toml_name() {
+        let root = fresh_test_dir("generated-pyproject-structured-toml");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("pyproject.toml"),
+            r#"[project]
+name = "cool # package"
+version = "0.1.0"
+"#,
+        )
+        .expect("write pyproject manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("cool_package")
+            .expect("generated python container");
+
+        assert_eq!(container.base.tech.as_deref(), Some("Python"));
+        assert_eq!(container.base.code.as_deref(), Some("src"));
+        assert_eq!(container.base.name, "Cool Package");
 
         cleanup(root);
     }

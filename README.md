@@ -49,6 +49,10 @@ Run the full local check before committing:
 npm run check:all
 ```
 
+GitHub Actions runs the same command on pushes to `main` and pull requests.
+Keep local and CI behavior aligned by updating `scripts/check.sh` when the gate
+changes.
+
 This runs:
 
 - `cargo fmt --all -- --check`
