@@ -58,6 +58,8 @@ pub fn build_minimal_generated_model_from_authored_system(
     }
 
     let mut systems = BTreeMap::new();
+    let mut relationships = Vec::new();
+
     if !containers.is_empty() {
         let (system_slug, system_name) = match authored_internal_system {
             Some(system) => (system.slug.clone(), system.name.clone()),
@@ -90,6 +92,7 @@ pub fn build_minimal_generated_model_from_authored_system(
                 authored_collision_index.as_ref(),
             );
             let container_code = container.code;
+            let dependency_targets = container.dependency_targets;
             reserved_slugs.insert(container_slug.clone());
             let components = build_generated_container_components(
                 root_path,
@@ -115,6 +118,95 @@ pub fn build_minimal_generated_model_from_authored_system(
                     components,
                 },
             );
+
+            for (dependency_slug, dependency_kind) in dependency_targets {
+                let dependency_name = dependency_display_name(&dependency_slug);
+
+                match dependency_kind {
+                    PackageJsonDependencyKind::ExternalSystem => {
+                        let external_system_slug = resolve_generated_system_slug(
+                            &dependency_slug,
+                            &reserved_slugs,
+                            authored_collision_index.as_ref(),
+                        );
+                        reserved_slugs.insert(external_system_slug.clone());
+
+                        if !systems.contains_key(&external_system_slug) {
+                            systems.insert(
+                                external_system_slug.clone(),
+                                crate::System {
+                                    base: crate::BaseElement {
+                                        slug: external_system_slug.clone(),
+                                        name: dependency_name,
+                                        description: None,
+                                        tech: None,
+                                        status: Default::default(),
+                                        code: None,
+                                        generated: true,
+                                    },
+                                    external: true,
+                                    containers: BTreeMap::new(),
+                                },
+                            );
+                        }
+
+                        relationships.push(crate::Relationship {
+                            from: container_slug.clone(),
+                            to: external_system_slug.clone(),
+                            description: format!("Uses {}", dependency_slug),
+                            tech: None,
+                            status: Default::default(),
+                            generated: true,
+                        });
+                    }
+                    PackageJsonDependencyKind::StoreContainer => {
+                        let store_container_slug = resolve_generated_store_container_slug(
+                            &dependency_slug,
+                            &system_slug,
+                            &reserved_slugs,
+                            authored_collision_index.as_ref(),
+                        );
+                        let reuses_authored_store = authored_store_container_exists(
+                            &store_container_slug,
+                            &system_slug,
+                            authored_collision_index.as_ref(),
+                        );
+                        reserved_slugs.insert(store_container_slug.clone());
+
+                        if !generated_system
+                            .containers
+                            .contains_key(&store_container_slug)
+                            && !reuses_authored_store
+                        {
+                            generated_system.containers.insert(
+                                store_container_slug.clone(),
+                                crate::Container {
+                                    base: crate::BaseElement {
+                                        slug: store_container_slug.clone(),
+                                        name: dependency_name,
+                                        description: None,
+                                        tech: None,
+                                        status: Default::default(),
+                                        code: None,
+                                        generated: true,
+                                    },
+                                    kind: crate::ContainerKind::Store,
+                                    components: BTreeMap::new(),
+                                },
+                            );
+                        }
+
+                        relationships.push(crate::Relationship {
+                            from: container_slug.clone(),
+                            to: store_container_slug,
+                            description: format!("Uses {}", dependency_slug),
+                            tech: None,
+                            status: Default::default(),
+                            generated: true,
+                        });
+                    }
+                }
+            }
         }
 
         systems.insert(system_slug, generated_system);
@@ -125,7 +217,7 @@ pub fn build_minimal_generated_model_from_authored_system(
         description: None,
         actors: BTreeMap::new(),
         systems,
-        relationships: Vec::new(),
+        relationships,
         generated: true,
     }
 }
@@ -324,7 +416,10 @@ pub fn single_authored_internal_system_for_generation(
 #[derive(Debug, Default)]
 struct AuthoredContainerCollisionIndex {
     containers_by_parent: BTreeMap<String, BTreeSet<String>>,
+    store_containers_by_parent: BTreeMap<String, BTreeSet<String>>,
     components_by_parent: BTreeMap<String, BTreeSet<String>>,
+    external_system_slugs: BTreeSet<String>,
+    non_system_slugs: BTreeSet<String>,
     non_container_slugs: BTreeSet<String>,
     non_component_slugs: BTreeSet<String>,
 }
@@ -337,20 +432,34 @@ fn build_authored_container_collision_index(
     let mut index = AuthoredContainerCollisionIndex::default();
 
     for actor_slug in authored_model.model.actors.keys() {
+        index.non_system_slugs.insert(actor_slug.clone());
         index.non_container_slugs.insert(actor_slug.clone());
         index.non_component_slugs.insert(actor_slug.clone());
     }
 
     for (system_slug, system) in &authored_model.model.systems {
+        if system.external {
+            index.external_system_slugs.insert(system_slug.clone());
+        } else {
+            index.non_system_slugs.insert(system_slug.clone());
+        }
         index.non_container_slugs.insert(system_slug.clone());
         index.non_component_slugs.insert(system_slug.clone());
         let containers = index
             .containers_by_parent
             .entry(system_slug.clone())
             .or_default();
+        let store_containers = index
+            .store_containers_by_parent
+            .entry(system_slug.clone())
+            .or_default();
 
-        for container_slug in system.containers.keys() {
+        for (container_slug, container) in &system.containers {
+            index.non_system_slugs.insert(container_slug.clone());
             containers.insert(container_slug.clone());
+            if container.kind == crate::ContainerKind::Store {
+                store_containers.insert(container_slug.clone());
+            }
             index.non_component_slugs.insert(container_slug.clone());
         }
 
@@ -360,6 +469,7 @@ fn build_authored_container_collision_index(
                 .entry(container_slug.clone())
                 .or_default();
             for component_slug in container.components.keys() {
+                index.non_system_slugs.insert(component_slug.clone());
                 components.insert(component_slug.clone());
                 index.non_container_slugs.insert(component_slug.clone());
             }
@@ -433,6 +543,207 @@ fn resolve_generated_container_slug(
     }
 }
 
+fn resolve_generated_store_container_slug(
+    initial_slug: &str,
+    parent_slug: &str,
+    used: &BTreeSet<String>,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> String {
+    let mut i = 1u32;
+    loop {
+        let candidate = if i == 1 {
+            initial_slug.to_string()
+        } else {
+            format!("{initial_slug}_{i}")
+        };
+
+        if !used.contains(&candidate)
+            && generated_store_container_slug_is_reusable(
+                &candidate,
+                parent_slug,
+                i == 1,
+                authored_collision_index,
+            )
+        {
+            return candidate;
+        }
+
+        i += 1;
+    }
+}
+
+fn generated_store_container_slug_is_reusable(
+    slug: &str,
+    parent_slug: &str,
+    allow_same_parent_store_reuse: bool,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> bool {
+    let Some(index) = authored_collision_index else {
+        return true;
+    };
+
+    if allow_same_parent_store_reuse {
+        if let Some(stores) = index.store_containers_by_parent.get(parent_slug) {
+            if stores.contains(slug) {
+                return true;
+            }
+        }
+    }
+
+    if let Some(containers) = index.containers_by_parent.get(parent_slug) {
+        if containers.contains(slug) {
+            return false;
+        }
+    }
+
+    if index.non_container_slugs.contains(slug) {
+        return false;
+    }
+
+    for (existing_parent, containers) in &index.containers_by_parent {
+        if existing_parent != parent_slug && containers.contains(slug) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn authored_store_container_exists(
+    slug: &str,
+    parent_slug: &str,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> bool {
+    let Some(index) = authored_collision_index else {
+        return false;
+    };
+
+    index
+        .store_containers_by_parent
+        .get(parent_slug)
+        .is_some_and(|stores| stores.contains(slug))
+}
+
+fn package_json_dependency_targets_from_manifest(
+    manifest: &serde_json::Value,
+) -> BTreeMap<String, PackageJsonDependencyKind> {
+    let mut dependencies = BTreeMap::new();
+    for section_name in ["dependencies"] {
+        let Some(dependency_section) = manifest
+            .get(section_name)
+            .and_then(|value| value.as_object())
+        else {
+            continue;
+        };
+
+        for dependency_name in dependency_section.keys() {
+            if let Some((dependency_slug, dependency_kind)) =
+                normalize_package_json_dependency_name(dependency_name)
+            {
+                dependencies
+                    .entry(dependency_slug)
+                    .or_insert(dependency_kind);
+            }
+        }
+    }
+
+    dependencies
+}
+
+fn normalize_package_json_dependency_name(
+    dependency_name: &str,
+) -> Option<(String, PackageJsonDependencyKind)> {
+    let normalized = dependency_name.to_ascii_lowercase();
+    if normalized == "aws-sdk" || normalized.starts_with("@aws-sdk/") {
+        return Some(("aws".to_string(), PackageJsonDependencyKind::ExternalSystem));
+    }
+
+    match normalized.as_str() {
+        "pg" | "postgres" | "postgresql" => Some((
+            "postgres".to_string(),
+            PackageJsonDependencyKind::StoreContainer,
+        )),
+        "mysql" | "mysql2" => Some((
+            "mysql".to_string(),
+            PackageJsonDependencyKind::StoreContainer,
+        )),
+        "redis" => Some((
+            "redis".to_string(),
+            PackageJsonDependencyKind::StoreContainer,
+        )),
+        "mongodb" | "mongo" => Some((
+            "mongodb".to_string(),
+            PackageJsonDependencyKind::StoreContainer,
+        )),
+        "sqlite" | "rusqlite" => Some((
+            "sqlite".to_string(),
+            PackageJsonDependencyKind::StoreContainer,
+        )),
+        "stripe" | "sendgrid" | "twilio" | "sentry" => {
+            Some((normalized, PackageJsonDependencyKind::ExternalSystem))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_generated_system_slug(
+    initial_slug: &str,
+    used: &BTreeSet<String>,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> String {
+    let mut i = 1u32;
+    loop {
+        let candidate = if i == 1 {
+            initial_slug.to_string()
+        } else {
+            format!("{initial_slug}_{i}")
+        };
+
+        if !used.contains(&candidate)
+            && generated_system_slug_is_reusable(&candidate, authored_collision_index)
+        {
+            return candidate;
+        }
+
+        i += 1;
+    }
+}
+
+fn generated_system_slug_is_reusable(
+    slug: &str,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> bool {
+    let Some(index) = authored_collision_index else {
+        return true;
+    };
+
+    if index.external_system_slugs.contains(slug) {
+        return true;
+    }
+
+    if index.non_system_slugs.contains(slug) {
+        return false;
+    }
+
+    true
+}
+
+fn dependency_display_name(slug: &str) -> String {
+    match slug {
+        "aws" => "AWS".to_string(),
+        "mongodb" => "MongoDB".to_string(),
+        "postgres" => "Postgres".to_string(),
+        "sqlite" => "SQLite".to_string(),
+        _ => titleize(slug),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PackageJsonDependencyKind {
+    ExternalSystem,
+    StoreContainer,
+}
+
 fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
     let manifest_path = repo_root.join("Cargo.toml");
     if !manifest_path.is_file() {
@@ -453,6 +764,7 @@ fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<Gener
         name: titleize(&name),
         code,
         tech: Some("Rust".to_string()),
+        dependency_targets: BTreeMap::new(),
     })
 }
 
@@ -489,6 +801,7 @@ fn detect_root_package_json_manifest(
         name: titleize(&name),
         code,
         tech: Some("Node.js".to_string()),
+        dependency_targets: package_json_dependency_targets_from_manifest(&manifest),
     })
 }
 
@@ -524,6 +837,7 @@ fn detect_root_go_mod_manifest(repo_root: &Path, repo_name: &str) -> Option<Gene
         name: titleize(&module_name),
         code,
         tech: Some("Go".to_string()),
+        dependency_targets: BTreeMap::new(),
     })
 }
 
@@ -550,6 +864,7 @@ fn detect_root_pyproject_toml_manifest(
         name: titleize(&name),
         code,
         tech: Some("Python".to_string()),
+        dependency_targets: BTreeMap::new(),
     })
 }
 
@@ -572,6 +887,7 @@ fn detect_root_requirements_txt_manifest(
         name: "Python".to_string(),
         code,
         tech: Some("Python".to_string()),
+        dependency_targets: BTreeMap::new(),
     })
 }
 
@@ -601,6 +917,7 @@ fn detect_root_gemfile_manifest(repo_root: &Path) -> Option<GeneratedContainer> 
         } else {
             "Ruby".to_string()
         }),
+        dependency_targets: BTreeMap::new(),
     })
 }
 
@@ -752,6 +1069,7 @@ struct GeneratedContainer {
     name: String,
     code: String,
     tech: Option<String>,
+    dependency_targets: BTreeMap<String, PackageJsonDependencyKind>,
 }
 
 pub fn render_generated_model_yaml(model: &Model) -> Result<String, CommandError> {

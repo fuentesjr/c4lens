@@ -412,6 +412,209 @@ fn generate_with_root_package_json_manifest_returns_generated_system_and_contain
 }
 
 #[test]
+fn generate_with_package_json_dependencies_returns_external_targets_and_relationships() {
+    let root = fresh_test_dir("generate-package-json-dependencies");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(
+        repo.join("package.json"),
+        r#"{
+  "name": "@acme/web-client",
+  "dependencies": {
+    "stripe": "^14.0.0",
+    "redis": "^4.0.0",
+    "pg": "^8.0.0",
+    "postgres": "^3.0.0",
+    "left-pad": "^1.3.0"
+  }
+}"#,
+    )
+    .expect("write package manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("acme_web_client:"));
+    assert!(generated_yaml.contains("stripe:"));
+    assert!(generated_yaml.contains("name: Stripe"));
+    assert!(generated_yaml.contains("external: true"));
+    assert!(generated_yaml.contains("redis:"));
+    assert!(generated_yaml.contains("name: Redis"));
+    assert!(generated_yaml.contains("postgres:"));
+    assert!(generated_yaml.contains("name: Postgres"));
+    assert_eq!(generated_yaml.matches("kind: store").count(), 2);
+    assert!(generated_yaml.contains("relationships:"));
+    assert!(generated_yaml.contains("from: acme_web_client"));
+    assert!(generated_yaml.contains("description: Uses stripe"));
+    assert!(generated_yaml.contains("description: Uses redis"));
+    assert!(generated_yaml.contains("description: Uses postgres"));
+    assert_eq!(generated_yaml.matches("to: stripe").count(), 1);
+    assert_eq!(generated_yaml.matches("to: redis").count(), 1);
+    assert_eq!(generated_yaml.matches("to: postgres").count(), 1);
+    assert!(!generated_yaml.contains("left_pad"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_renames_store_dependency_when_authored_container_is_not_store() {
+    let root = fresh_test_dir("generate-package-json-store-kind-collision");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Repo
+systems:
+  platform:
+    name: Platform
+    containers:
+      redis:
+        name: Redis Service Facade
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("package.json"),
+        r#"{
+  "name": "@acme/web-client",
+  "dependencies": {
+    "redis": "^4.0.0"
+  }
+}"#,
+    )
+    .expect("write package manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("platform:"));
+    assert!(generated_yaml.contains("redis_2:"));
+    assert!(generated_yaml.contains("name: Redis"));
+    assert!(generated_yaml.contains("kind: store"));
+    assert!(generated_yaml.contains("to: redis_2"));
+    assert!(!generated_yaml.contains("to: redis\n"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_renames_external_dependency_when_authored_system_is_internal() {
+    let root = fresh_test_dir("generate-package-json-external-internal-collision");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Repo
+systems:
+  platform:
+    name: Platform
+  stripe:
+    name: Internal Stripe Adapter
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("package.json"),
+        r#"{
+  "name": "@acme/web-client",
+  "dependencies": {
+    "stripe": "^14.0.0"
+  }
+}"#,
+    )
+    .expect("write package manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("stripe_2:"));
+    assert!(generated_yaml.contains("name: Stripe"));
+    assert!(generated_yaml.contains("external: true"));
+    assert!(generated_yaml.contains("to: stripe_2"));
+    assert!(!generated_yaml.contains("to: stripe\n"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_reuses_authored_store_dependency_under_reused_internal_system() {
+    let root = fresh_test_dir("generate-package-json-authored-store-reuse");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Repo
+systems:
+  platform:
+    name: Platform
+    containers:
+      redis:
+        name: Redis
+        kind: store
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("package.json"),
+        r#"{
+  "name": "@acme/web-client",
+  "dependencies": {
+    "redis": "^4.0.0"
+  }
+}"#,
+    )
+    .expect("write package manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("platform:"));
+    assert!(!generated_yaml.contains("      redis:\n"));
+    assert!(!generated_yaml.contains("redis_2:"));
+    assert!(generated_yaml.contains("to: redis"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_reuses_single_authored_internal_system_for_generated_containers() {
     let root = fresh_test_dir("generate-reuses-authored-system");
     let repo = root.join("repo");
