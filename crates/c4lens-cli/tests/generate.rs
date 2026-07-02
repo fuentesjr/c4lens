@@ -96,8 +96,12 @@ fn generate_write_validates_candidate_before_replacing_existing_overlay() {
         r#"
 name: Existing
 actors:
-  api_service:
-    name: API Service Actor
+  user:
+    name: User
+relationships:
+  - from: user
+    to: missing_target
+    description: Missing target
 "#,
     )
     .expect("write authored model");
@@ -118,7 +122,10 @@ actors:
         .code(4);
     let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
 
-    assert_eq!(payload["issues"][0]["code"], "semantic.duplicate_slug");
+    assert_eq!(
+        payload["issues"][0]["code"],
+        "semantic.unresolved_relationship_target"
+    );
     assert_eq!(
         fs::read_to_string(&generated_path).expect("old generated overlay"),
         old_overlay
@@ -380,6 +387,173 @@ systems:
     assert!(generated_yaml.contains("name: Billing Platform"));
     assert!(generated_yaml.contains("invoice_api:"));
     assert!(!generated_yaml.contains("  repo:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_write_renames_generated_container_when_authored_actor_slug_collides() {
+    let root = fresh_test_dir("generate-write-authored-actor-collision");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+actors:
+  api_service:
+    name: API Service Actor
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+
+    Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let generated_yaml =
+        fs::read_to_string(repo.join("c4/model.generated.yml")).expect("generated yaml");
+    assert!(generated_yaml.contains("api_service_2:"));
+    assert!(!generated_yaml.contains("api_service:\n"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_keeps_generated_container_slug_when_matching_authored_container_parent() {
+    let root = fresh_test_dir("generate-keep-authored-container-match");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  billing:
+    name: Billing Platform
+    containers:
+      api_service:
+        name: Authored API Service
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  billing:"));
+    assert!(generated_yaml.contains("api_service:"));
+    assert!(!generated_yaml.contains("api_service_2:"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_renames_generated_container_when_authored_container_parent_differs() {
+    let root = fresh_test_dir("generate-authored-container-different-parent-collision");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+systems:
+  authored_system:
+    name: Authored System
+    containers:
+      api_service:
+        name: Authored API Service
+  another_system:
+    name: Another System
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  repo:"));
+    assert!(generated_yaml.contains("api_service_2:"));
+    assert!(!generated_yaml.contains("api_service:\n"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_suffix_collision_does_not_merge_unrelated_authored_container() {
+    let root = fresh_test_dir("generate-suffix-skips-authored-container");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("c4")).expect("create c4");
+    fs::write(
+        repo.join("c4/model.yml"),
+        r#"
+name: Authored Model
+actors:
+  api_service:
+    name: API Service Actor
+systems:
+  repo:
+    name: Repo
+    containers:
+      api_service_2:
+        name: Authored API Service 2
+"#,
+    )
+    .expect("write authored model");
+    fs::write(
+        repo.join("go.mod"),
+        "module github.com/acme/api-service\n\ngo 1.22\n",
+    )
+    .expect("write go manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api_service_3:"));
+    assert!(!generated_yaml.contains("api_service_2:\n"));
 
     cleanup(root);
 }

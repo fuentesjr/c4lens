@@ -64,6 +64,7 @@ pub fn build_minimal_generated_model_from_authored_system(
             None => (slugify(&repo.name), titleize(&repo.name)),
         };
 
+        let authored_collision_index = build_authored_container_collision_index(repo);
         let mut reserved_slugs = BTreeSet::new();
         reserved_slugs.insert(system_slug.clone());
 
@@ -82,7 +83,12 @@ pub fn build_minimal_generated_model_from_authored_system(
         };
 
         for container in containers.drain(..) {
-            let container_slug = ensure_unique_slug(&container.slug, &reserved_slugs);
+            let container_slug = resolve_generated_container_slug(
+                &container.slug,
+                &system_slug,
+                &reserved_slugs,
+                authored_collision_index.as_ref(),
+            );
             reserved_slugs.insert(container_slug.clone());
 
             generated_system.containers.insert(
@@ -138,6 +144,108 @@ pub fn single_authored_internal_system_for_generation(
     }
 
     Some(first)
+}
+
+#[derive(Debug, Default)]
+struct AuthoredContainerCollisionIndex {
+    containers_by_parent: BTreeMap<String, BTreeSet<String>>,
+    non_container_slugs: BTreeSet<String>,
+}
+
+fn build_authored_container_collision_index(
+    repo: &RepoHandle,
+) -> Option<AuthoredContainerCollisionIndex> {
+    let authored_model =
+        crate::loader::load_authored_effective_model_from_repo(repo.clone()).ok()?;
+    let mut index = AuthoredContainerCollisionIndex::default();
+
+    for actor_slug in authored_model.model.actors.keys() {
+        index.non_container_slugs.insert(actor_slug.clone());
+    }
+
+    for (system_slug, system) in &authored_model.model.systems {
+        index.non_container_slugs.insert(system_slug.clone());
+        let containers = index
+            .containers_by_parent
+            .entry(system_slug.clone())
+            .or_default();
+
+        for container_slug in system.containers.keys() {
+            containers.insert(container_slug.clone());
+        }
+
+        for container in system.containers.values() {
+            for component_slug in container.components.keys() {
+                index.non_container_slugs.insert(component_slug.clone());
+            }
+        }
+    }
+
+    Some(index)
+}
+
+fn generated_container_slug_is_reusable(
+    slug: &str,
+    parent_slug: &str,
+    allow_same_parent_container_reuse: bool,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> bool {
+    let Some(index) = authored_collision_index else {
+        return true;
+    };
+
+    if allow_same_parent_container_reuse {
+        if let Some(containers) = index.containers_by_parent.get(parent_slug) {
+            if containers.contains(slug) {
+                return true;
+            }
+        }
+    } else if let Some(containers) = index.containers_by_parent.get(parent_slug) {
+        if containers.contains(slug) {
+            return false;
+        }
+    }
+
+    if index.non_container_slugs.contains(slug) {
+        return false;
+    }
+
+    for (existing_parent, containers) in &index.containers_by_parent {
+        if existing_parent != parent_slug && containers.contains(slug) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn resolve_generated_container_slug(
+    initial_slug: &str,
+    parent_slug: &str,
+    used: &BTreeSet<String>,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> String {
+    let mut i = 1u32;
+    loop {
+        let candidate = if i == 1 {
+            initial_slug.to_string()
+        } else {
+            format!("{}_{}", initial_slug, i)
+        };
+
+        if !used.contains(&candidate)
+            && generated_container_slug_is_reusable(
+                &candidate,
+                parent_slug,
+                i == 1,
+                authored_collision_index,
+            )
+        {
+            return candidate;
+        }
+
+        i += 1;
+    }
 }
 
 fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
@@ -399,22 +507,6 @@ fn parse_toml_string_field(line: &str, key: &str) -> Option<String> {
     }
 
     None
-}
-
-fn ensure_unique_slug(initial_slug: &str, used: &BTreeSet<String>) -> String {
-    let candidate = initial_slug.to_string();
-    if !used.contains(&candidate) {
-        return candidate;
-    }
-
-    let mut i = 2;
-    loop {
-        let attempt = format!("{}_{}", initial_slug, i);
-        if !used.contains(&attempt) {
-            return attempt;
-        }
-        i += 1;
-    }
 }
 
 fn slugify(value: &str) -> String {
