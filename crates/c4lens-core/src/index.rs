@@ -12,6 +12,8 @@ use crate::{
     CommandError, RepoHandle, ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
 };
 
+mod rust;
+
 const MIGRATION_VERSION: i64 = 1;
 const MAX_SCANNABLE_FILE_BYTES: i64 = 2 * 1024 * 1024;
 const SCAN_BINARY_PREFIX_BYTES: usize = 8 * 1024;
@@ -474,22 +476,10 @@ fn extract_file_artifacts(
     let Ok(text) = String::from_utf8(bytes) else {
         return Ok((0, 0));
     };
-    let mut symbols = Vec::new();
-    let mut imports = Vec::new();
-    for (line_index, line) in text.lines().enumerate() {
-        let line_no = (line_index + 1) as i32;
-        let clean_line = strip_inline_comment(lang, line);
-        if clean_line.trim().is_empty() {
-            continue;
-        }
-        if lang == "rust" {
-            extract_rust_symbols(&mut symbols, line_no, clean_line);
-            extract_rust_imports(&mut imports, repo_root, &file.path, line_no, clean_line);
-        }
-    }
+    let parsed = parse_file_artifacts(lang, repo_root, &file.path, &text);
 
     let mut inserted_symbols = 0usize;
-    for symbol in &symbols {
+    for symbol in &parsed.symbols {
         connection
             .execute(
                 r#"
@@ -511,7 +501,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         inserted_symbols += 1;
     }
 
-    for import in &imports {
+    for import in &parsed.imports {
         connection
             .execute(
                 r#"
@@ -528,353 +518,19 @@ VALUES (?1, ?2, ?3, ?4)
             .map_err(sqlite_error)?;
     }
 
-    Ok((inserted_symbols, imports.len()))
+    Ok((inserted_symbols, parsed.imports.len()))
 }
 
-fn strip_inline_comment<'a>(lang: &str, line: &'a str) -> &'a str {
-    let comment_markers: &[&str] = match lang {
-        "rust" => &["//"],
-        _ => &[],
-    };
-    for marker in comment_markers {
-        if let Some(index) = line.find(marker) {
-            return &line[..index];
-        }
-    }
-    line
-}
-
-#[derive(Clone, Debug)]
-struct ParsedSymbol {
-    kind: &'static str,
-    name: String,
-    qualified_name: Option<String>,
-    start_line: i32,
-    start_column: i32,
-    end_line: i32,
-    end_column: i32,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedImport {
-    target_module: String,
-    target_path: Option<String>,
-    kind: &'static str,
-}
-
-fn extract_rust_symbols(symbols: &mut Vec<ParsedSymbol>, line_no: i32, line: &str) {
-    let clean = line.trim_start();
-    let tokens: Vec<&str> = clean.split_whitespace().collect();
-    if let Some((name, kind, column)) =
-        extract_named_construct(&tokens, line, ["fn", "struct", "enum", "trait"])
-    {
-        symbols.push(ParsedSymbol {
-            kind,
-            name: name.to_string(),
-            qualified_name: None,
-            start_line: line_no,
-            start_column: column as i32,
-            end_line: line_no,
-            end_column: (column + name.len()) as i32,
-        });
-    }
-}
-
-fn extract_named_construct<'a>(
-    tokens: &[&'a str],
-    line: &'a str,
-    keywords: impl IntoIterator<Item = &'a str>,
-) -> Option<(&'a str, &'static str, usize)> {
-    let mut keyword_index = None;
-    let mut keyword = "";
-    for k in keywords {
-        if let Some(position) = tokens.iter().position(|token| *token == k) {
-            keyword_index = Some(position);
-            keyword = k;
-            break;
-        }
-    }
-
-    let position = keyword_index?;
-    let candidate = tokens.get(position + 1)?;
-    let name = candidate
-        .split(['(', '<', '{', ':', '=', ';'])
-        .next()
-        .unwrap_or(candidate);
-    if !is_rust_identifier(name) || is_rust_reserved_word(name) {
-        return None;
-    }
-
-    let kind = match keyword {
-        "fn" => "function",
-        "def" => "function",
-        "class" => "class",
-        "module" => "module",
-        "struct" => "struct",
-        "enum" => "enum",
-        "trait" => "interface",
-        _ => "symbol",
-    };
-
-    let before = line.find(candidate).unwrap_or(0);
-    Some((name, kind, before))
-}
-
-fn extract_rust_imports(
-    imports: &mut Vec<ParsedImport>,
+fn parse_file_artifacts(
+    lang: &str,
     repo_root: &Path,
     source_path: &str,
-    _line_no: i32,
-    line: &str,
-) {
-    let clean = line.trim_start();
-    if !clean.starts_with("use ") {
-        return;
+    text: &str,
+) -> rust::ParsedArtifacts {
+    match lang {
+        "rust" => rust::parse_file_artifacts(repo_root, source_path, text),
+        _ => rust::ParsedArtifacts::default(),
     }
-
-    let target = clean
-        .trim_start_matches("use ")
-        .trim()
-        .trim_end_matches(';');
-    if target.is_empty() || target.starts_with('{') || target.starts_with('*') {
-        return;
-    }
-
-    for normalized in expand_rust_import_targets(target) {
-        if normalized.is_empty() {
-            continue;
-        }
-
-        let kind = if is_rust_internal_import_path(&normalized) {
-            "internal"
-        } else {
-            "external"
-        };
-        let target_path = if kind == "internal" {
-            resolve_rust_internal_import_target(repo_root, source_path, &normalized)
-        } else {
-            None
-        };
-        imports.push(ParsedImport {
-            target_module: normalized.clone(),
-            target_path,
-            kind,
-        });
-    }
-}
-
-fn expand_rust_import_targets(target: &str) -> Vec<String> {
-    let normalized = if target.contains('{') {
-        target.trim().to_string()
-    } else {
-        normalize_rust_import_target(target)
-    };
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-
-    let Some((prefix, body)) = split_rust_group_import(&normalized) else {
-        return vec![normalized];
-    };
-
-    if !is_rust_internal_import_path(prefix) || body.contains('{') || body.contains('}') {
-        return vec![normalized];
-    }
-
-    let targets = body
-        .split(',')
-        .filter_map(|raw_item| {
-            let item = normalize_rust_import_target(raw_item);
-            if item.is_empty() || item.starts_with('*') {
-                return None;
-            }
-
-            if item == "self" {
-                Some(prefix.trim_end_matches("::").to_string())
-            } else {
-                Some(format!("{prefix}{item}"))
-            }
-        })
-        .collect::<Vec<_>>();
-    if targets.is_empty() {
-        vec![normalized]
-    } else {
-        targets
-    }
-}
-
-fn normalize_rust_import_target(target: &str) -> String {
-    let without_alias = target
-        .trim()
-        .split_once(" as ")
-        .map_or_else(|| target.trim(), |(path, _alias)| path.trim());
-    without_alias.trim_end_matches("::*").trim().to_string()
-}
-
-fn split_rust_group_import(target: &str) -> Option<(&str, &str)> {
-    let open_brace = target.find('{')?;
-    if !target.ends_with('}') {
-        return None;
-    }
-
-    let prefix = &target[..open_brace];
-    if prefix.is_empty() {
-        return None;
-    }
-
-    let body = &target[open_brace + 1..target.len() - 1];
-    Some((prefix, body))
-}
-
-fn is_rust_internal_import_path(module_path: &str) -> bool {
-    module_path == "crate"
-        || module_path.starts_with("crate::")
-        || module_path == "self"
-        || module_path.starts_with("self::")
-        || module_path == "super"
-        || module_path.starts_with("super::")
-}
-
-fn resolve_rust_internal_import_target(
-    repo_root: &Path,
-    source_path: &str,
-    module_path: &str,
-) -> Option<String> {
-    if module_path.contains('{') || module_path.contains('*') {
-        return None;
-    }
-
-    let module_root = rust_module_root_for_import(repo_root, source_path, module_path)?;
-    let segments = rust_import_module_segments(module_path)?;
-    for length in (1..=segments.len()).rev() {
-        let module_segments = &segments[..length];
-        for candidate in rust_module_file_candidates(&module_root, module_segments) {
-            if candidate.is_file() {
-                return relative_posix_path(repo_root, &candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn rust_module_root_for_import(
-    repo_root: &Path,
-    source_path: &str,
-    module_path: &str,
-) -> Option<PathBuf> {
-    if module_path.starts_with("crate::") {
-        return Some(repo_root.join("src"));
-    }
-
-    let source_parent = repo_root.join(source_path).parent()?.to_path_buf();
-    if module_path.starts_with("self::") {
-        return Some(source_parent);
-    }
-
-    if module_path.starts_with("super::") {
-        return Some(source_parent.parent()?.to_path_buf());
-    }
-
-    None
-}
-
-fn rust_import_module_segments(module_path: &str) -> Option<Vec<&str>> {
-    let trimmed = module_path
-        .strip_prefix("crate::")
-        .or_else(|| module_path.strip_prefix("self::"))
-        .or_else(|| module_path.strip_prefix("super::"))?;
-    let segments = trimmed
-        .split("::")
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    if segments.is_empty() {
-        None
-    } else {
-        Some(segments)
-    }
-}
-
-fn rust_module_file_candidates(module_root: &Path, segments: &[&str]) -> Vec<PathBuf> {
-    let mut directory = module_root.to_path_buf();
-    for segment in segments.iter().take(segments.len().saturating_sub(1)) {
-        directory.push(segment);
-    }
-
-    let Some(last) = segments.last() else {
-        return Vec::new();
-    };
-
-    vec![
-        directory.join(format!("{last}.rs")),
-        directory.join(last).join("mod.rs"),
-    ]
-}
-
-fn is_rust_identifier(text: &str) -> bool {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-        _ => return false,
-    }
-
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn is_rust_reserved_word(text: &str) -> bool {
-    matches!(
-        text,
-        "as" | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "async"
-            | "await"
-            | "dyn"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "try"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "yield"
-    )
 }
 
 fn count_repo_symbols_for_repo(
@@ -1038,7 +694,7 @@ ORDER BY imports.id
 
     for (import_id, source_path, target_module) in imports {
         let target_path =
-            resolve_rust_internal_import_target(repo_root, &source_path, &target_module);
+            rust::resolve_internal_import_target(repo_root, &source_path, &target_module);
         connection
             .execute(
                 r#"
