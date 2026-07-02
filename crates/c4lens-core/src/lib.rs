@@ -1,3 +1,4 @@
+mod generated_overlay;
 mod generation;
 mod index;
 mod loader;
@@ -5,6 +6,12 @@ mod lock;
 mod model;
 mod sample;
 
+pub use generated_overlay::{
+    canonicalize_repo_root, promote_generated_overlay, read_generated_overlay,
+    read_generated_overlay_from_path, validate_generated_overlay_paths,
+    write_generated_overlay_to_path, write_generated_overlay_to_temp_file,
+    write_schema_json_if_missing,
+};
 pub use generation::{
     build_minimal_generated_model, build_minimal_generated_model_from_authored_system,
     render_generated_model_yaml, single_authored_internal_system_for_generation,
