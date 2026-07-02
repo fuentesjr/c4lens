@@ -280,6 +280,111 @@ fn generate_with_root_cargo_manifest_returns_generated_system_and_container() {
 }
 
 #[test]
+fn generate_with_source_root_directories_returns_generated_components() {
+    let root = fresh_test_dir("generate-source-root-components");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/api")).expect("create api");
+    fs::create_dir_all(repo.join("src/billing-service")).expect("create billing service");
+    fs::create_dir_all(repo.join("src/domain")).expect("create domain");
+    fs::create_dir_all(repo.join("src/tests")).expect("create tests");
+    fs::create_dir_all(repo.join("src/target")).expect("create target");
+    fs::create_dir_all(repo.join("src/.cache")).expect("create hidden");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("components:"));
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("name: Api"));
+    assert!(generated_yaml.contains("code: src/api"));
+    assert!(generated_yaml.contains("domain:"));
+    assert!(generated_yaml.contains("name: Domain"));
+    assert!(generated_yaml.contains("code: src/domain"));
+    assert!(generated_yaml.contains("billing_service_2:"));
+    assert!(generated_yaml.contains("code: src/billing-service"));
+    assert!(!generated_yaml.contains("tests:"));
+    assert!(!generated_yaml.contains("target:"));
+    assert!(!generated_yaml.contains(".cache"));
+
+    cleanup(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_does_not_emit_components_from_symlinked_source_root() {
+    let root = fresh_test_dir("generate-symlinked-source-root-components");
+    let repo = root.join("repo");
+    let outside = root.join("outside");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(outside.join("external_component")).expect("create external component");
+    std::os::unix::fs::symlink(&outside, repo.join("src")).expect("symlink src");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("billing_service:"));
+    assert!(!generated_yaml.contains("external_component"));
+
+    cleanup(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_skips_component_directories_with_invalid_code_path_names() {
+    let root = fresh_test_dir("generate-invalid-component-code-path");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/api")).expect("create api");
+    fs::create_dir_all(repo.join("src/bad\\name")).expect("create invalid code path dir");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"billing-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(!generated_yaml.contains("bad_name"));
+    assert!(!generated_yaml.contains(r"bad\name"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_with_root_package_json_manifest_returns_generated_system_and_container() {
     let root = fresh_test_dir("generate-root-package-json");
     let repo = root.join("repo");

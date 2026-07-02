@@ -89,22 +89,30 @@ pub fn build_minimal_generated_model_from_authored_system(
                 &reserved_slugs,
                 authored_collision_index.as_ref(),
             );
+            let container_code = container.code;
             reserved_slugs.insert(container_slug.clone());
+            let components = build_generated_container_components(
+                root_path,
+                &container_slug,
+                &container_code,
+                &mut reserved_slugs,
+                authored_collision_index.as_ref(),
+            );
 
             generated_system.containers.insert(
                 container_slug.clone(),
                 crate::Container {
                     base: crate::BaseElement {
-                        slug: container_slug,
+                        slug: container_slug.clone(),
                         name: container.name,
                         description: None,
                         tech: container.tech,
                         status: Default::default(),
-                        code: Some(container.code),
+                        code: Some(container_code.clone()),
                         generated: true,
                     },
                     kind: Default::default(),
-                    components: BTreeMap::new(),
+                    components,
                 },
             );
         }
@@ -120,6 +128,173 @@ pub fn build_minimal_generated_model_from_authored_system(
         relationships: Vec::new(),
         generated: true,
     }
+}
+
+fn build_generated_container_components(
+    repo_root: &Path,
+    container_slug: &str,
+    container_code: &str,
+    reserved_slugs: &mut BTreeSet<String>,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> BTreeMap<String, crate::Component> {
+    if container_code == "." {
+        return BTreeMap::new();
+    }
+
+    let components_root = repo_root.join(container_code);
+    let repo_root = match repo_root.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return BTreeMap::new(),
+    };
+    let components_root = match components_root.canonicalize() {
+        Ok(path) if path.starts_with(&repo_root) => path,
+        _ => return BTreeMap::new(),
+    };
+
+    let mut child_dirs = match fs::read_dir(&components_root) {
+        Ok(entries) => entries,
+        Err(_) => return BTreeMap::new(),
+    }
+    .filter_map(Result::ok)
+    .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+    .filter_map(|entry| {
+        let name = entry.file_name();
+        let name = name.to_str()?;
+        let name = name.to_string();
+        if is_ignored_generated_component_directory(&name) {
+            return None;
+        }
+        if !is_valid_generated_component_code_path_segment(&name) {
+            return None;
+        }
+        Some(name)
+    })
+    .collect::<Vec<_>>();
+
+    child_dirs.sort_unstable();
+
+    let mut components = BTreeMap::new();
+    for name in child_dirs {
+        let initial_slug = slugify(&name);
+        let component_slug = resolve_generated_component_slug(
+            &initial_slug,
+            container_slug,
+            reserved_slugs,
+            authored_collision_index,
+        );
+        reserved_slugs.insert(component_slug.clone());
+
+        components.insert(
+            component_slug.clone(),
+            crate::Component {
+                base: crate::BaseElement {
+                    slug: component_slug,
+                    name: titleize(&name),
+                    description: None,
+                    tech: None,
+                    status: Default::default(),
+                    code: Some(format!("{container_code}/{name}")),
+                    generated: true,
+                },
+            },
+        );
+    }
+
+    components
+}
+
+fn resolve_generated_component_slug(
+    initial_slug: &str,
+    parent_slug: &str,
+    used: &BTreeSet<String>,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> String {
+    let mut i = 1u32;
+    loop {
+        let candidate = if i == 1 {
+            initial_slug.to_string()
+        } else {
+            format!("{initial_slug}_{i}")
+        };
+
+        if !used.contains(&candidate)
+            && generated_component_slug_is_reusable(
+                &candidate,
+                parent_slug,
+                i == 1,
+                authored_collision_index,
+            )
+        {
+            return candidate;
+        }
+
+        i += 1;
+    }
+}
+
+fn generated_component_slug_is_reusable(
+    slug: &str,
+    parent_slug: &str,
+    allow_same_parent_component_reuse: bool,
+    authored_collision_index: Option<&AuthoredContainerCollisionIndex>,
+) -> bool {
+    let Some(index) = authored_collision_index else {
+        return true;
+    };
+
+    if allow_same_parent_component_reuse {
+        if let Some(components) = index.components_by_parent.get(parent_slug) {
+            if components.contains(slug) {
+                return true;
+            }
+        }
+    } else if let Some(components) = index.components_by_parent.get(parent_slug) {
+        if components.contains(slug) {
+            return false;
+        }
+    }
+
+    if index.non_component_slugs.contains(slug) {
+        return false;
+    }
+
+    for (existing_parent, components) in &index.components_by_parent {
+        if existing_parent != parent_slug && components.contains(slug) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_ignored_generated_component_directory(name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+
+    matches!(
+        name,
+        "test"
+            | "tests"
+            | "spec"
+            | "specs"
+            | "__tests__"
+            | "fixtures"
+            | "vendor"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+    )
+}
+
+fn is_valid_generated_component_code_path_segment(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && name != "."
+        && name != ".."
 }
 
 pub fn single_authored_internal_system_for_generation(
@@ -149,7 +324,9 @@ pub fn single_authored_internal_system_for_generation(
 #[derive(Debug, Default)]
 struct AuthoredContainerCollisionIndex {
     containers_by_parent: BTreeMap<String, BTreeSet<String>>,
+    components_by_parent: BTreeMap<String, BTreeSet<String>>,
     non_container_slugs: BTreeSet<String>,
+    non_component_slugs: BTreeSet<String>,
 }
 
 fn build_authored_container_collision_index(
@@ -161,10 +338,12 @@ fn build_authored_container_collision_index(
 
     for actor_slug in authored_model.model.actors.keys() {
         index.non_container_slugs.insert(actor_slug.clone());
+        index.non_component_slugs.insert(actor_slug.clone());
     }
 
     for (system_slug, system) in &authored_model.model.systems {
         index.non_container_slugs.insert(system_slug.clone());
+        index.non_component_slugs.insert(system_slug.clone());
         let containers = index
             .containers_by_parent
             .entry(system_slug.clone())
@@ -172,10 +351,16 @@ fn build_authored_container_collision_index(
 
         for container_slug in system.containers.keys() {
             containers.insert(container_slug.clone());
+            index.non_component_slugs.insert(container_slug.clone());
         }
 
-        for container in system.containers.values() {
+        for (container_slug, container) in &system.containers {
+            let components = index
+                .components_by_parent
+                .entry(container_slug.clone())
+                .or_default();
             for component_slug in container.components.keys() {
+                components.insert(component_slug.clone());
                 index.non_container_slugs.insert(component_slug.clone());
             }
         }
