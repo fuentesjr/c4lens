@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    load_effective_model_from_repo_recovering_generated_overlay, CodeRef, CommandError, RepoHandle,
-    ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
+    acquire_repo_write_lock, load_effective_model_from_repo_recovering_generated_overlay, CodeRef,
+    CommandError, RepoHandle, ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
 };
 
 const MIGRATION_VERSION: i64 = 1;
@@ -23,6 +23,7 @@ pub struct ScanOptions {
 }
 
 pub fn scan_repo(repo: RepoHandle, options: ScanOptions) -> Result<ScanSummary, CommandError> {
+    let _write_lock = acquire_repo_write_lock(&repo)?;
     let started = Instant::now();
     let index_path = options
         .index_path
@@ -1259,7 +1260,9 @@ mod tests {
 
     use rusqlite::{params, Connection};
 
-    use crate::{get_element_code, repo_handle_from_path, scan_repo, ScanOptions};
+    use crate::{
+        acquire_repo_write_lock, get_element_code, repo_handle_from_path, scan_repo, ScanOptions,
+    };
 
     use super::migrate_index;
 
@@ -1473,6 +1476,28 @@ ORDER BY lower(symbols.name)
             .expect("query files after delete");
         assert_eq!(file_count, 2);
 
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_rejects_when_write_lock_is_held() {
+        let root = fresh_test_dir("scan-write-locked");
+        let index_root = fresh_test_dir("scan-write-locked-index");
+        let db_path = index_root.join("index.sqlite3");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let _lock = acquire_repo_write_lock(&repo).expect("acquire external lock");
+        let error = scan_repo(
+            repo,
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path),
+            },
+        )
+        .expect_err("scan blocked by lock");
+
+        assert_eq!(error.code, "repo.write_locked");
         cleanup(index_root);
         cleanup(root);
     }

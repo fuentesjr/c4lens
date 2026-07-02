@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
+use c4lens_core::{acquire_repo_write_lock, repo_handle_from_path};
 use serde_json::Value;
 
 #[test]
@@ -81,6 +82,26 @@ fn scan_json_reports_zero_changed_files_on_unchanged_rescan() {
 
     cleanup(repo);
     cleanup(index_dir);
+}
+
+#[test]
+fn scan_reports_write_locked_when_writer_is_active() {
+    let repo = fresh_test_dir("scan-write-locked");
+    let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
+        .expect("lock held for test");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["scan", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(3);
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
+
+    assert_eq!(payload["issues"][0]["code"], "repo.write_locked");
+
+    drop(lock);
+    cleanup(repo);
 }
 
 #[test]

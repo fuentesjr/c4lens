@@ -1,6 +1,7 @@
 mod generation;
 mod index;
 mod loader;
+mod lock;
 mod model;
 mod sample;
 
@@ -12,5 +13,6 @@ pub use index::{default_index_path, get_element_code, migrate_index, scan_repo, 
 pub use loader::{
     load_effective_model_from_repo, load_effective_model_from_repo_recovering_generated_overlay,
 };
+pub use lock::{acquire_repo_write_lock, RepoWriteLock};
 pub use model::*;
 pub use sample::hardcoded_sample_model;

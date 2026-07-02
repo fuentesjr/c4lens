@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
+use c4lens_core::{acquire_repo_write_lock, repo_handle_from_path};
 use serde_json::Value;
 
 #[test]
@@ -169,6 +170,73 @@ fn generate_with_root_package_json_manifest_returns_generated_system_and_contain
     assert!(generated_yaml.contains("code: app"));
 
     cleanup(root);
+}
+
+#[test]
+fn generate_write_reports_write_locked_when_writer_is_active() {
+    let repo = fresh_test_dir("generate-write-locked");
+    let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
+        .expect("preacquired lock");
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .code(3);
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json error");
+
+    assert_eq!(payload["issues"][0]["code"], "repo.write_locked");
+    drop(lock);
+    cleanup(repo);
+}
+
+#[test]
+fn generate_read_only_json_succeeds_when_writer_is_active() {
+    let repo = fresh_test_dir("generate-read-only-locked");
+    let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
+        .expect("preacquired lock");
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+
+    assert_eq!(payload["writeRequested"], false);
+    assert!(payload["generatedYaml"].as_str().is_some());
+    assert!(!repo.join("c4/model.generated.yml").exists());
+
+    drop(lock);
+    cleanup(repo);
+}
+
+#[test]
+fn generate_check_succeeds_when_writer_is_active() {
+    let repo = fresh_test_dir("generate-check-locked");
+    Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--write", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
+        .expect("preacquired lock");
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--check", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+
+    assert_eq!(payload["writeRequested"], false);
+    assert_eq!(payload["checkRequested"], true);
+    assert_eq!(payload["changed"], false);
+
+    drop(lock);
+    cleanup(repo);
 }
 
 #[test]

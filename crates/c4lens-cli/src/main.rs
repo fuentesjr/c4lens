@@ -6,8 +6,9 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use c4lens_core::{
-    build_minimal_generated_model, load_effective_model_from_repo, render_generated_model_yaml,
-    repo_handle_from_path, scan_repo, CommandError, RepoHandle, ScanOptions, GENERATED_MODEL_PATH,
+    acquire_repo_write_lock, build_minimal_generated_model, load_effective_model_from_repo,
+    render_generated_model_yaml, repo_handle_from_path, scan_repo, CommandError, RepoHandle,
+    ScanOptions, GENERATED_MODEL_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -143,6 +144,11 @@ fn run_scan(repo: Option<PathBuf>, force: bool, json: bool) -> i32 {
     ) {
         Ok(summary) => summary,
         Err(error) => {
+            let exit_code = if error.code == "repo.write_locked" {
+                3
+            } else {
+                4
+            };
             if json {
                 println!(
                     "{}",
@@ -161,7 +167,7 @@ fn run_scan(repo: Option<PathBuf>, force: bool, json: bool) -> i32 {
             } else {
                 eprintln!("{}", error.message);
             }
-            return 4;
+            return exit_code;
         }
     };
 
@@ -198,6 +204,11 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
                 index_path: None,
             },
         ) {
+            let exit_code = if error.code == "repo.write_locked" {
+                3
+            } else {
+                4
+            };
             if json {
                 println!(
                     "{}",
@@ -216,7 +227,7 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
             } else {
                 eprintln!("{}", error.message);
             }
-            return 4;
+            return exit_code;
         }
     }
 
@@ -247,9 +258,13 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
     };
 
     if write {
-        if let Err(error) = write_generated_overlay(&repo, &generated_yaml) {
+        if let Err(error) = write_generated_overlay_with_lock(&repo, &generated_yaml) {
             print_generate_error(&error, json);
-            return 4;
+            return if error.code == "repo.write_locked" {
+                3
+            } else {
+                4
+            };
         }
 
         if json {
@@ -319,6 +334,14 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
     }
 
     0
+}
+
+fn write_generated_overlay_with_lock(
+    repo: &RepoHandle,
+    generated_yaml: &str,
+) -> Result<(), CommandError> {
+    let _write_lock = acquire_repo_write_lock(repo)?;
+    write_generated_overlay(repo, generated_yaml)
 }
 
 fn read_existing_generated_overlay(repo: &RepoHandle) -> Result<Option<String>, CommandError> {
