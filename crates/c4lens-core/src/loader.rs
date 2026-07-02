@@ -72,6 +72,13 @@ pub fn validate_generated_overlay_yaml(
     repo: RepoHandle,
     generated_yaml: &str,
 ) -> Result<(), CommandError> {
+    validate_generated_overlay_yaml_with_report(repo, generated_yaml).map(|_| ())
+}
+
+pub fn validate_generated_overlay_yaml_with_report(
+    repo: RepoHandle,
+    generated_yaml: &str,
+) -> Result<ValidationReport, CommandError> {
     let repo_root = canonical_repo_root(&repo)?;
     let authored = load_optional_model_source(&repo_root, AUTHORED_MODEL_PATH, false)?;
     let generated = Some(load_model_source_from_contents(
@@ -80,7 +87,7 @@ pub fn validate_generated_overlay_yaml(
         true,
     )?);
 
-    build_effective_model(
+    let effective = build_effective_model(
         repo,
         &repo_root,
         ModelInputs {
@@ -89,7 +96,7 @@ pub fn validate_generated_overlay_yaml(
         },
     )?;
 
-    Ok(())
+    Ok(effective.validation)
 }
 
 fn canonical_repo_root(repo: &RepoHandle) -> Result<PathBuf, CommandError> {

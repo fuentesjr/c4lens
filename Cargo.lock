@@ -507,6 +507,7 @@ dependencies = [
  "rfd 0.15.4",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

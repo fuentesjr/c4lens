@@ -23,6 +23,7 @@ fn main() {
             commands::repo::get_model,
             commands::repo::scan_codebase,
             commands::repo::get_element_code,
+            commands::repo::generate_model,
             commands::repo::open_in_editor,
         ])
         .run(tauri::generate_context!())

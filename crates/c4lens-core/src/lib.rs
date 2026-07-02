@@ -16,7 +16,7 @@ pub use index::{
 };
 pub use loader::{
     load_effective_model_from_repo, load_effective_model_from_repo_recovering_generated_overlay,
-    validate_generated_overlay_yaml,
+    validate_generated_overlay_yaml, validate_generated_overlay_yaml_with_report,
 };
 pub use lock::{acquire_repo_write_lock, RepoWriteLock};
 pub use model::*;

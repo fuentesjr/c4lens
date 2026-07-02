@@ -91,6 +91,46 @@ export interface ValidationReport {
   issues: ValidationIssue[];
 }
 
+export interface GenerationSummary {
+  systemsAdded: number;
+  containersAdded: number;
+  componentsAdded: number;
+  relationshipsAdded: number;
+  externalSystemsAdded: number;
+}
+
+export type GenerationChangeKind = "add" | "remove" | "replace";
+export type GenerationChangeTarget = "system" | "container" | "component" | "relationship";
+
+export interface GenerationChange {
+  id: string;
+  kind: GenerationChangeKind;
+  target: GenerationChangeTarget;
+  slug?: string | null;
+  relationshipKey?: string | null;
+  selectedByDefault: boolean;
+}
+
+export interface GenerationDiff {
+  candidateId: string;
+  repo: RepoHandle;
+  overlayPath: string;
+  baseAuthoredSha: string | null;
+  baseOverlaySha: string | null;
+  modelSourceSha: string;
+  indexScanToken: string;
+  schemaVersion: string;
+  beforeYaml?: string | null;
+  afterYaml: string;
+  summary: GenerationSummary;
+  changes: GenerationChange[];
+  validation: ValidationReport;
+}
+
+export interface GenerateModelParams {
+  scanFirst?: boolean;
+}
+
 export interface ScanSummary {
   repo: RepoHandle;
   scanToken: string;
