@@ -116,6 +116,62 @@ fn generate_json_outputs_yaml() {
 }
 
 #[test]
+fn generate_with_root_cargo_manifest_returns_generated_system_and_container() {
+    let root = fresh_test_dir("generate-root-cargo");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("src")).expect("create src");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"cool-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("  repo:"));
+    assert!(generated_yaml.contains("cool_service:"));
+    assert!(generated_yaml.contains("Cool Service"));
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_with_root_package_json_manifest_returns_generated_system_and_container() {
+    let root = fresh_test_dir("generate-root-package-json");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir(repo.join("app")).expect("create app");
+    fs::write(repo.join("package.json"), r#"{"name": "@acme/web-client"}"#)
+        .expect("write package manifest");
+
+    let assert = Command::cargo_bin("c4lens-cli")
+        .expect("binary")
+        .args(["generate", "--json", "--repo"])
+        .arg(&repo)
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
+
+    assert!(generated_yaml.contains("acme_web_client:"));
+    assert!(generated_yaml.contains("Acme Web Client"));
+    assert!(generated_yaml.contains("tech: Node.js"));
+    assert!(generated_yaml.contains("code: app"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_check_and_write_is_invalid_usage() {
     let repo = fresh_test_dir("generate-check-write");
 

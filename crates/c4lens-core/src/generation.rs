@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 use serde_json::json;
 
@@ -11,18 +13,269 @@ pub const GENERATED_MODEL_HEADER: &str = "# c4/model.generated.yml
 ";
 
 pub fn build_minimal_generated_model(repo: &RepoHandle) -> Model {
+    let root_path = Path::new(&repo.root_path);
+    let mut containers = Vec::new();
+
+    if let Some(container) = detect_root_cargo_manifest(root_path, &repo.name) {
+        containers.push(container);
+    }
+
+    if let Some(container) = detect_root_package_json_manifest(root_path, &repo.name) {
+        containers.push(container);
+    }
+
+    let mut systems = BTreeMap::new();
+    if !containers.is_empty() {
+        let system_slug = slugify(&repo.name);
+        let mut reserved_slugs = BTreeSet::new();
+        reserved_slugs.insert(system_slug.clone());
+
+        let mut generated_system = crate::System {
+            base: crate::BaseElement {
+                slug: system_slug.clone(),
+                name: titleize(&repo.name),
+                description: None,
+                tech: None,
+                status: Default::default(),
+                code: None,
+                generated: true,
+            },
+            external: false,
+            containers: BTreeMap::new(),
+        };
+
+        for container in containers.drain(..) {
+            let container_slug = ensure_unique_slug(&container.slug, &reserved_slugs);
+            reserved_slugs.insert(container_slug.clone());
+
+            generated_system.containers.insert(
+                container_slug.clone(),
+                crate::Container {
+                    base: crate::BaseElement {
+                        slug: container_slug,
+                        name: container.name,
+                        description: None,
+                        tech: container.tech,
+                        status: Default::default(),
+                        code: Some(container.code),
+                        generated: true,
+                    },
+                    kind: Default::default(),
+                    components: BTreeMap::new(),
+                },
+            );
+        }
+
+        systems.insert(system_slug, generated_system);
+    }
+
     Model {
         name: repo.name.clone(),
         description: None,
         actors: BTreeMap::new(),
-        systems: BTreeMap::new(),
+        systems,
         relationships: Vec::new(),
         generated: true,
     }
 }
 
+fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
+    let name = parse_manifest_name(&manifest_text, repo_name);
+    let slug = slugify(&name);
+    let code = if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug,
+        name: titleize(&name),
+        code,
+        tech: Some("Rust".to_string()),
+    })
+}
+
+fn detect_root_package_json_manifest(
+    repo_root: &Path,
+    repo_name: &str,
+) -> Option<GeneratedContainer> {
+    let manifest_path = repo_root.join("package.json");
+    if !manifest_path.is_file() {
+        return None;
+    }
+
+    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).ok()?;
+    let name = manifest
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or(repo_name)
+        .to_string();
+
+    let slug = slugify(&name);
+    let code = if repo_root.join("src").is_dir() {
+        "src".to_string()
+    } else if repo_root.join("app").is_dir() {
+        "app".to_string()
+    } else if repo_root.join("lib").is_dir() {
+        "lib".to_string()
+    } else {
+        ".".to_string()
+    };
+
+    Some(GeneratedContainer {
+        slug,
+        name: titleize(&name),
+        code,
+        tech: Some("Node.js".to_string()),
+    })
+}
+
+fn parse_manifest_name(text: &str, fallback: &str) -> String {
+    let mut in_package_section = false;
+
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line == "[package]" {
+            in_package_section = true;
+            continue;
+        }
+
+        if line.starts_with('[') {
+            in_package_section = false;
+            continue;
+        }
+
+        if !in_package_section {
+            continue;
+        }
+
+        if let Some(raw_name) = parse_toml_string_field(line, "name") {
+            return raw_name;
+        }
+    }
+
+    fallback.to_string()
+}
+
+fn parse_toml_string_field(line: &str, key: &str) -> Option<String> {
+    let mut parts = line.splitn(2, '=');
+    let field = parts.next()?.trim();
+    if field != key {
+        return None;
+    }
+
+    let remainder = parts.next()?.trim();
+    if let Some(value) = remainder
+        .trim_matches(|c| c == '"')
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return Some(value.to_string());
+    }
+
+    let value = remainder
+        .trim_start_matches('"')
+        .trim_end_matches('"')
+        .trim_matches('\'');
+    if !value.is_empty() {
+        return Some(value.to_string());
+    }
+
+    None
+}
+
+fn ensure_unique_slug(initial_slug: &str, used: &BTreeSet<String>) -> String {
+    let candidate = initial_slug.to_string();
+    if !used.contains(&candidate) {
+        return candidate;
+    }
+
+    let mut i = 2;
+    loop {
+        let attempt = format!("{}_{}", initial_slug, i);
+        if !used.contains(&attempt) {
+            return attempt;
+        }
+        i += 1;
+    }
+}
+
+fn slugify(value: &str) -> String {
+    let mut result = String::new();
+    let mut was_sep = false;
+
+    for ch in value.chars() {
+        let normalized = ch.to_ascii_lowercase();
+        if normalized.is_ascii_alphanumeric() {
+            result.push(normalized);
+            was_sep = false;
+        } else if !result.is_empty() && !was_sep {
+            result.push('_');
+            was_sep = true;
+        }
+    }
+
+    while result.ends_with('_') {
+        result.pop();
+    }
+
+    if result.is_empty() {
+        return "repo".to_string();
+    }
+
+    if !result.chars().next().unwrap().is_ascii_lowercase() {
+        result = format!("x_{result}");
+    }
+
+    result
+}
+
+fn titleize(value: &str) -> String {
+    let parts = value
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let first = chars.next().unwrap_or_default().to_ascii_uppercase();
+            let rest = chars.as_str().to_ascii_lowercase();
+            format!("{first}{rest}")
+        })
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        return "Project".to_string();
+    }
+
+    if parts.len() == 1 && parts[0].eq_ignore_ascii_case(value) {
+        parts[0].clone()
+    } else {
+        parts.join(" ")
+    }
+}
+
+struct GeneratedContainer {
+    slug: String,
+    name: String,
+    code: String,
+    tech: Option<String>,
+}
+
 pub fn render_generated_model_yaml(model: &Model) -> Result<String, CommandError> {
-    let serialized_model = serde_yaml_ng::to_string(model).map_err(|error| {
+    let mut model_file = model.clone();
+    clear_runtime_slugs(&mut model_file);
+    let serialized_model = serde_yaml_ng::to_string(&model_file).map_err(|error| {
         CommandError::with_details(
             "generation.failed",
             "Failed to serialize generated model.",
@@ -35,10 +288,28 @@ pub fn render_generated_model_yaml(model: &Model) -> Result<String, CommandError
     Ok(format!("{GENERATED_MODEL_HEADER}{serialized_model}"))
 }
 
+fn clear_runtime_slugs(model: &mut Model) {
+    for actor in model.actors.values_mut() {
+        actor.base.slug.clear();
+    }
+
+    for system in model.systems.values_mut() {
+        system.base.slug.clear();
+        for container in system.containers.values_mut() {
+            container.base.slug.clear();
+            for component in container.components.values_mut() {
+                component.base.slug.clear();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_minimal_generated_model;
     use super::render_generated_model_yaml;
+    use super::{slugify, titleize};
+    use crate::load_effective_model_from_repo;
     use crate::repo_handle_from_path;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,6 +351,151 @@ mod tests {
         assert!(first.contains("generated: true"));
 
         cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_from_root_cargo_manifest() {
+        let root = fresh_test_dir("generated-cargo-manifest");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("Cargo.toml"),
+            r#"[package]
+name = "cool-service"
+version = "0.1.0"
+"#,
+        )
+        .expect("write cargo manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let system_slug = slugify(&repo.name);
+        let container_slug = slugify("cool-service");
+
+        let generated_system = model.systems.get(&system_slug).expect("internal system");
+        let container = generated_system
+            .containers
+            .get(&container_slug)
+            .expect("generated container");
+
+        assert_eq!(generated_system.base.name, titleize(&repo.name));
+        assert!(generated_system.base.generated);
+        assert_eq!(container.base.tech.as_deref(), Some("Rust"));
+        assert_eq!(container.base.code.as_deref(), Some("src"));
+        assert_eq!(container.base.name, titleize("cool-service"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn rendered_manifest_model_roundtrips_through_loader_schema() {
+        let root = fresh_test_dir("generated-manifest-roundtrip");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::create_dir(repo_dir.join("c4")).expect("create c4");
+        fs::write(
+            repo_dir.join("Cargo.toml"),
+            r#"[package]
+name = "cool-service"
+version = "0.1.0"
+"#,
+        )
+        .expect("write cargo manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let yaml = render_generated_model_yaml(&model).expect("render generated yaml");
+        assert!(!yaml.contains("slug:"));
+        fs::write(repo_dir.join("c4/model.generated.yml"), yaml).expect("write generated model");
+
+        let effective = load_effective_model_from_repo(repo).expect("generated model loads");
+
+        assert!(effective.validation.ok);
+        assert!(effective.model.systems.contains_key("repo"));
+        assert_eq!(
+            effective.model.systems["repo"].containers["cool_service"]
+                .base
+                .tech
+                .as_deref(),
+            Some("Rust")
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_renames_colliding_container_slug() {
+        let root = fresh_test_dir("generated-collision-manifest");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("Cargo.toml"),
+            r#"[package]
+name = "repo"
+version = "0.1.0"
+"#,
+        )
+        .expect("write cargo manifest");
+        fs::write(repo_dir.join("package.json"), r#"{"name": "repo"}"#)
+            .expect("write package manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        let container_slugs = generated_system
+            .containers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(container_slugs.len(), 2);
+        assert_eq!(container_slugs[0], "repo_2");
+        assert_eq!(container_slugs[1], "repo_3");
+        assert!(!generated_system.containers.contains_key("repo"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_from_root_package_json_manifest() {
+        let root = fresh_test_dir("generated-package-json-manifest");
+        let repo_dir = root.join("web-app");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("app")).expect("create app");
+        fs::write(
+            repo_dir.join("package.json"),
+            r#"{"name": "@acme/web-client"}"#,
+        )
+        .expect("write package manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+        let container = generated_system
+            .containers
+            .get("acme_web_client")
+            .expect("generated package container");
+
+        assert_eq!(container.base.tech.as_deref(), Some("Node.js"));
+        assert_eq!(container.base.code.as_deref(), Some("app"));
+        assert_eq!(container.base.name, "Acme Web Client");
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn slugify_prefixes_non_letter_slugs_with_x() {
+        assert_eq!(slugify("123 service"), "x_123_service");
     }
 
     fn fresh_test_dir(name: &str) -> std::path::PathBuf {

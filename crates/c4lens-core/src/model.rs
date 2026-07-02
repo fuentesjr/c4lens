@@ -192,7 +192,7 @@ pub struct Relationship {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseElement {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub slug: Slug,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
