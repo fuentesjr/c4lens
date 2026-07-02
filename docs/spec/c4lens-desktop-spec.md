@@ -1585,7 +1585,6 @@ Ruby
 Rust
 Go
 Python
-Java
 ```
 
 Unsupported languages are indexed as files only. They can still contribute to
@@ -1651,7 +1650,6 @@ Generation emits `c4/model.generated.yml`. It never writes `c4/model.yml`.
 | `pyproject.toml` | container | `tech: Python`; source roots package dirs, `src` |
 | `requirements.txt` | container | fallback Python container |
 | `Gemfile` | container | `tech: Ruby`; Rails if `rails` dependency present |
-| `pom.xml` / `build.gradle` | container | `tech: Java`; source root `src/main` |
 | `Dockerfile` | container | if no manifest already covers same directory |
 | `docker-compose.yml` service | container | one container per service |
 | top-level source dir/package/module | component | within nearest container |
@@ -2196,6 +2194,6 @@ Manual visual QA:
   generated relationships.
 - Whether generated-slug rename/move detection is worth implementing before
   broader sharing.
-- Which languages beyond JS/TS, Ruby, Rust, Go, Python, and Java are required
+- Which languages beyond JS/TS, Ruby, Rust, Go, and Python are required
   for early real use.
 - Whether updater support waits for signing/notarization or ships later.

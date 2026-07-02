@@ -47,11 +47,6 @@ pub fn build_minimal_generated_model_from_authored_system(
         has_root_manifest = true;
     }
 
-    if let Some(container) = detect_root_java_manifest(root_path, &repo.name) {
-        containers.push(container);
-        has_root_manifest = true;
-    }
-
     if let Some(container) = detect_root_pyproject_toml_manifest(root_path, &repo.name) {
         containers.push(container);
         has_root_manifest = true;
@@ -891,69 +886,6 @@ fn detect_root_pyproject_toml_manifest(
     })
 }
 
-fn detect_root_java_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
-    detect_root_pom_xml_manifest(repo_root, repo_name)
-        .or_else(|| detect_root_build_gradle_manifest(repo_root, repo_name))
-}
-
-fn detect_root_pom_xml_manifest(repo_root: &Path, repo_name: &str) -> Option<GeneratedContainer> {
-    let manifest_path = repo_root.join("pom.xml");
-    if !manifest_path.is_file() {
-        return None;
-    }
-
-    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
-    let name = parse_pom_artifact_id(&manifest_text).unwrap_or_else(|| repo_name.to_string());
-    if name.trim().is_empty() {
-        return None;
-    }
-
-    let code = if repo_root.join("src").join("main").is_dir() {
-        "src/main".to_string()
-    } else {
-        ".".to_string()
-    };
-
-    Some(GeneratedContainer {
-        slug: slugify(&name),
-        name: titleize(&name),
-        code,
-        tech: Some("Java".to_string()),
-        dependency_targets: BTreeMap::new(),
-    })
-}
-
-fn detect_root_build_gradle_manifest(
-    repo_root: &Path,
-    repo_name: &str,
-) -> Option<GeneratedContainer> {
-    let manifest_path = repo_root.join("build.gradle");
-    if !manifest_path.is_file() {
-        return None;
-    }
-
-    let manifest_text = fs::read_to_string(&manifest_path).ok()?;
-    let name =
-        parse_gradle_root_project_name(&manifest_text).unwrap_or_else(|| repo_name.to_string());
-    if name.trim().is_empty() {
-        return None;
-    }
-
-    let code = if repo_root.join("src").join("main").is_dir() {
-        "src/main".to_string()
-    } else {
-        ".".to_string()
-    };
-
-    Some(GeneratedContainer {
-        slug: slugify(&name),
-        name: titleize(&name),
-        code,
-        tech: Some("Java".to_string()),
-        dependency_targets: BTreeMap::new(),
-    })
-}
-
 fn detect_root_requirements_txt_manifest(
     repo_root: &Path,
     has_pyproject: bool,
@@ -1189,81 +1121,6 @@ fn parse_manifest_name_in_section(text: &str, section: &str, key: &str, fallback
     }
 
     fallback.to_string()
-}
-
-fn parse_pom_artifact_id(text: &str) -> Option<String> {
-    let mut in_parent = false;
-
-    for line in text.lines() {
-        let line = line.trim();
-
-        if in_parent {
-            if line.contains("</parent>") {
-                in_parent = false;
-            }
-            continue;
-        }
-
-        if let Some(raw_name) = parse_xml_tag_value(line, "artifactId") {
-            return Some(raw_name);
-        }
-
-        if line.contains("<parent") && !line.contains("</parent>") {
-            in_parent = true;
-        }
-    }
-
-    None
-}
-
-fn parse_gradle_root_project_name(text: &str) -> Option<String> {
-    for raw_line in text.lines() {
-        let line = raw_line.split("//").next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let Some((left, right)) = line.split_once('=') else {
-            continue;
-        };
-        if left.trim() != "rootProject.name" {
-            continue;
-        }
-
-        let value = right.trim().trim_end_matches(';').trim().trim();
-
-        if value.len() >= 2 {
-            if value.starts_with('\'') && value.ends_with('\'') {
-                return Some(value.trim_matches('\'').to_string());
-            }
-
-            if value.starts_with('"') && value.ends_with('"') {
-                return Some(value.trim_matches('"').to_string());
-            }
-        }
-    }
-
-    None
-}
-
-fn parse_xml_tag_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-
-    let Some(start) = line.find(&open) else {
-        return None;
-    };
-    let end = line.find(&close)?;
-    if end <= start + open.len() {
-        return None;
-    }
-
-    let value = line[start + open.len()..end].trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
 }
 
 fn parse_toml_string_field(line: &str, key: &str) -> Option<String> {

@@ -324,7 +324,7 @@ Core risks: auto-layout aesthetics at scale, large-model rendering, slug stabili
 - **Relationship inference quality.** Cheap signals (intra-repo imports, manifest deps) miss runtime/dynamic edges and over/under-connect. *Mitigation:* flag generated relationships, keep them in the overlay, defer precise inference to LSP (Phase 3).
 - **Index staleness & incremental rescan.** Keeping the SQLite index correct as files change. *Mitigation:* content hashes drive change detection, mtime/size are advisory metadata only, `notify` drives incremental updates, and full rescan is always available.
 - **Large-repo scan performance.** First scan of a big monorepo. *Mitigation:* `ignore`-based parallel walk, tree-sitter is fast, scan off the UI thread with `scan-progress`; cache so it's a one-time cost.
-- **tree-sitter grammar coverage.** One grammar per language; uncovered languages degrade to file/dir-level generation only. *Mitigation:* ship a core set (JS/TS, Python, Rust, Go, Java, Ruby), fall back to directory heuristics otherwise; document coverage.
+- **tree-sitter grammar coverage.** One grammar per language; uncovered languages degrade to file/dir-level generation only. *Mitigation:* ship a core set (JS/TS, Python, Rust, Go, Ruby), fall back to directory heuristics otherwise; document coverage.
 - **Code signing / notarization.** macOS notarization and Windows signing are required for friction-free install/update. *Mitigation:* budget signing in Phase 2 packaging; `tauri-plugin-updater` expects signed artifacts.
 - **Security of reading arbitrary repos.** The app reads (and parses) whatever folder it's pointed at. *Mitigation:* strictly local, no network egress; Tauri capability allowlist scoped to the chosen repo; canonicalize all repo paths; reject symlink/control-file escapes; never execute scanned code.
 - **Generated-slug stability (decided).** Path-derived slugs change when files move, surfacing as dangling refs in authored relationships. MVP relies on validator flagging; rename/move detection is deferred to post-MVP (§10).
@@ -340,7 +340,7 @@ Best-effort signals → C4 elements; everything generated is provenance-marked a
 
 | Source signal | Detects | → c4lens |
 |---|---|---|
-| `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`/`requirements.txt`, `Gemfile`, `pom.xml`/`build.gradle` | a buildable/runnable unit | **container** (tech from the manifest) |
+| `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`/`requirements.txt`, `Gemfile` | a buildable/runnable unit | **container** (tech from the manifest) |
 | `Dockerfile`, `docker-compose` service | a deployable unit | **container** (`kind` inferred from base image) |
 | top-level source dirs / packages / modules within a container | building blocks | **component**s |
 | internal imports between modules (tree-sitter) | intra-system coupling | **relationship**s (component/container level) |

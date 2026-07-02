@@ -1200,7 +1200,6 @@ fn language_for_path(path: &str) -> Option<&'static str> {
         "rb" => Some("ruby"),
         "py" => Some("python"),
         "go" => Some("go"),
-        "java" => Some("java"),
         "kt" | "kts" => Some("kotlin"),
         "swift" => Some("swift"),
         "cs" => Some("csharp"),
