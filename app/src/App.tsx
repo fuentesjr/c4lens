@@ -29,11 +29,13 @@ import {
   exportView,
   fetchActiveModel,
   getElementCode,
+  getElementSymbols,
   isTauriDesktop,
   listenToModelEvents,
   openRepositoryFromDialog,
   openRepositoryFromPath,
   openInEditor,
+  repairSchema,
   scanCodebase,
   searchRepository,
 } from "./ipc/client";
@@ -77,9 +79,21 @@ type SourcePreviewState =
   | { status: "missing"; repoId: string; elementSlug: string; codeRef: null; message: null }
   | { status: "error"; repoId: string; elementSlug: string; codeRef: null; message: string };
 
+type ElementSymbolsState =
+  | { status: "idle"; symbols: SymbolSearchResult[]; message: null }
+  | { status: "loading"; repoId: string; elementSlug: string; symbols: SymbolSearchResult[]; message: null }
+  | { status: "ready"; repoId: string; elementSlug: string; symbols: SymbolSearchResult[]; message: null }
+  | { status: "error"; repoId: string; elementSlug: string; symbols: SymbolSearchResult[]; message: string };
+
 const idleSourcePreview: SourcePreviewState = {
   status: "idle",
   codeRef: null,
+  message: null,
+};
+
+const idleElementSymbols: ElementSymbolsState = {
+  status: "idle",
+  symbols: [],
   message: null,
 };
 
@@ -112,6 +126,7 @@ export function App() {
   const [validationOverride, setValidationOverride] = useState<ValidationReport | null>(null);
   const [status, setStatus] = useState("Sample model ready");
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewState>(idleSourcePreview);
+  const [elementSymbols, setElementSymbols] = useState<ElementSymbolsState>(idleElementSymbols);
   const [indexRevision, setIndexRevision] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResults>(emptySearchResults);
@@ -123,6 +138,7 @@ export function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => initialThemeMode());
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isRepairingSchema, setIsRepairingSchema] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
   const [nodes, setNodes, onNodesChange] = useNodesState<C4FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -156,6 +172,10 @@ export function App() {
   const visibleSourcePreview = useMemo(
     () => sourcePreviewForSelection(sourcePreview, activeRepoId, selectedElement),
     [activeRepoId, selectedElement, sourcePreview],
+  );
+  const visibleElementSymbols = useMemo(
+    () => elementSymbolsForSelection(elementSymbols, activeRepoId, selectedElement),
+    [activeRepoId, elementSymbols, selectedElement],
   );
   const activeValidation = validationOverride ?? model.validation;
   const warningIssues = useMemo(
@@ -433,6 +453,56 @@ export function App() {
   }, [activeRepoId, indexRevision, model.sourceSha, selectedElement?.code, selectedElement?.slug]);
 
   useEffect(() => {
+    let cancelled = false;
+    setElementSymbols(idleElementSymbols);
+
+    if (!selectedElement || !isTauriDesktop()) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const sourceRepoId = activeRepoIdRef.current;
+    const sourceSlug = selectedElement.slug;
+    setElementSymbols({
+      status: "loading",
+      repoId: sourceRepoId,
+      elementSlug: sourceSlug,
+      symbols: [],
+      message: null,
+    });
+
+    getElementSymbols(sourceSlug, 12)
+      .then((symbols) => {
+        if (cancelled || activeRepoIdRef.current !== sourceRepoId) {
+          return;
+        }
+        setElementSymbols({
+          status: "ready",
+          repoId: sourceRepoId,
+          elementSlug: sourceSlug,
+          symbols,
+          message: null,
+        });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled && activeRepoIdRef.current === sourceRepoId) {
+          setElementSymbols({
+            status: "error",
+            repoId: sourceRepoId,
+            elementSlug: sourceSlug,
+            symbols: [],
+            message: errorStatus(error, "Symbols unavailable"),
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepoId, indexRevision, model.sourceSha, selectedElement?.slug]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
@@ -523,6 +593,14 @@ export function App() {
         setIndexRevision(payload.summary.scanToken);
         clearGenerationCandidate();
       },
+      onScanProgress: (payload) => {
+        if (payload.repoId !== activeRepoIdRef.current) {
+          return;
+        }
+
+        const total = Math.max(payload.total, 1);
+        setStatus(payload.done >= total ? payload.message : `${payload.message}: ${payload.done}/${total}`);
+      },
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -596,6 +674,38 @@ export function App() {
       setStatus(errorStatus(error, "Failed to open source"));
     }
   }, [sourcePreview]);
+
+  const openSymbolInEditor = useCallback(async (symbol: SymbolSearchResult) => {
+    if (!isTauriDesktop()) {
+      return;
+    }
+
+    try {
+      await openInEditor(symbol.path, symbol.range.startLine, symbol.range.startColumn);
+      setStatus(`Opened ${symbol.path}:${symbol.range.startLine}`);
+    } catch (error) {
+      setStatus(errorStatus(error, "Failed to open symbol"));
+    }
+  }, []);
+
+  const runRepairSchema = useCallback(async () => {
+    if (!isTauriDesktop()) {
+      setStatus("Schema repair is available in the Tauri desktop shell");
+      return;
+    }
+
+    setIsRepairingSchema(true);
+    setStatus("Refreshing schema");
+    try {
+      const validation = await repairSchema();
+      setValidationOverride(validation);
+      setStatus("Schema refreshed");
+    } catch (error) {
+      setStatus(errorStatus(error, "Schema repair failed"));
+    } finally {
+      setIsRepairingSchema(false);
+    }
+  }, []);
 
   const openSearchPath = useCallback(async (path: string, range?: { startLine: number; startColumn: number }) => {
     if (!isTauriDesktop()) {
@@ -821,6 +931,7 @@ export function App() {
         <DetailPanel
           selectedElement={selectedElement}
           sourcePreview={visibleSourcePreview}
+          elementSymbols={visibleElementSymbols}
           view={view}
           model={model}
           scope={scope}
@@ -829,8 +940,11 @@ export function App() {
           errorIssues={errorIssues}
           generationCandidate={generationCandidate}
           isApplyingGenerated={isApplyingGenerated}
+          isRepairingSchema={isRepairingSchema}
           onDrillDown={navigateTo}
           onOpenInEditor={openSourceInEditor}
+          onOpenSymbol={openSymbolInEditor}
+          onRepairSchema={runRepairSchema}
           onApplyGeneration={applyGenerationCandidate}
         />
       </main>
@@ -886,9 +1000,26 @@ function sourcePreviewForSelection(
   return state;
 }
 
+function elementSymbolsForSelection(
+  state: ElementSymbolsState,
+  activeRepoId: string,
+  selectedElement: ElementNode | null,
+): ElementSymbolsState {
+  if (state.status === "idle" || !selectedElement) {
+    return idleElementSymbols;
+  }
+
+  if (state.repoId !== activeRepoId || state.elementSlug !== selectedElement.slug) {
+    return idleElementSymbols;
+  }
+
+  return state;
+}
+
 function DetailPanel({
   selectedElement,
   sourcePreview,
+  elementSymbols,
   view,
   model,
   scope,
@@ -897,12 +1028,16 @@ function DetailPanel({
   errorIssues,
   generationCandidate,
   isApplyingGenerated,
+  isRepairingSchema,
   onDrillDown,
   onOpenInEditor,
+  onOpenSymbol,
+  onRepairSchema,
   onApplyGeneration,
 }: {
   selectedElement: ElementNode | null;
   sourcePreview: SourcePreviewState;
+  elementSymbols: ElementSymbolsState;
   view: DerivedView;
   model: EffectiveModel;
   scope: ViewScope;
@@ -911,14 +1046,18 @@ function DetailPanel({
   errorIssues: ValidationIssue[];
   generationCandidate: GenerationDiff | null;
   isApplyingGenerated: boolean;
+  isRepairingSchema: boolean;
   onDrillDown: (scope: ViewScope) => void;
   onOpenInEditor: () => void;
+  onOpenSymbol: (symbol: SymbolSearchResult) => void;
+  onRepairSchema: () => void;
   onApplyGeneration: () => void;
 }) {
   const relatedEdges = selectedElement
     ? view.edges.filter((edge) => edge.source === selectedElement.slug || edge.target === selectedElement.slug)
     : [];
   const drillTarget = nextScopeForDrilldown(model, scope, selectedElement);
+  const hasSchemaDrift = warningIssues.some((issue) => issue.code === "schema.drift");
 
   return (
     <aside className="detail-panel">
@@ -961,6 +1100,7 @@ function DetailPanel({
             ) : null}
           </dl>
           <SourcePreview state={sourcePreview} onOpenInEditor={onOpenInEditor} />
+          <CodeSymbols state={elementSymbols} onOpenSymbol={onOpenSymbol} />
           {drillTarget ? (
             <button className="detail-action" onClick={() => onDrillDown(drillTarget)}>
               {drillTarget.level === "component" ? "Open components" : "Open containers"}
@@ -1011,6 +1151,12 @@ function DetailPanel({
           {validationReport.ok && warningIssues.length > 0 ? (
             <>
               <h3>Warnings</h3>
+              {hasSchemaDrift ? (
+                <button className="detail-action" onClick={onRepairSchema} disabled={isRepairingSchema}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                  <span>{isRepairingSchema ? "Refreshing schema" : "Refresh schema"}</span>
+                </button>
+              ) : null}
               <div className="validation-list">
                 {warningIssues.map((issue, index) => (
                   <ValidationIssueCard issue={issue} key={`${issue.code}-${issue.path ?? "model"}-${index}`} />
@@ -1021,6 +1167,42 @@ function DetailPanel({
         </>
       )}
     </aside>
+  );
+}
+
+function CodeSymbols({
+  state,
+  onOpenSymbol,
+}: {
+  state: ElementSymbolsState;
+  onOpenSymbol: (symbol: SymbolSearchResult) => void;
+}) {
+  if (state.status === "idle" || (state.status === "ready" && state.symbols.length === 0)) {
+    return null;
+  }
+
+  return (
+    <section className="code-symbols" aria-label="Code symbols">
+      <h3>Code Symbols</h3>
+      {state.status === "loading" ? <p className="muted">Loading symbols</p> : null}
+      {state.status === "error" ? <p className="muted">{state.message}</p> : null}
+      {state.status === "ready" && state.symbols.length > 0 ? (
+        <div className="code-symbol-list">
+          {state.symbols.map((symbol) => (
+            <button
+              key={`${symbol.path}:${symbol.range.startLine}:${symbol.range.startColumn}:${symbol.name}`}
+              type="button"
+              onClick={() => onOpenSymbol(symbol)}
+            >
+              <strong>{symbol.qualifiedName ?? symbol.name}</strong>
+              <span>
+                {symbol.kind} - {symbol.path}:{symbol.range.startLine}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

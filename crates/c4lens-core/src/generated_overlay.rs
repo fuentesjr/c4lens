@@ -187,6 +187,14 @@ pub fn write_schema_json_if_missing(generated_dir: &Path) -> Result<(), CommandE
     write_schema_json_to_path(&schema_path)
 }
 
+pub fn write_schema_json(repo: &RepoHandle) -> Result<(), CommandError> {
+    let repo_root = canonicalize_repo_root(repo)?;
+    let (generated_dir, _) = validate_generated_overlay_paths(&repo_root)?;
+    let schema_path = generated_dir.join("schema.json");
+    let _ = schema_json_exists(&schema_path)?;
+    write_schema_json_replacing_path(&schema_path)
+}
+
 fn schema_json_exists(schema_path: &Path) -> Result<bool, CommandError> {
     match fs::symlink_metadata(schema_path) {
         Ok(metadata) => {
@@ -216,6 +224,17 @@ fn schema_json_exists(schema_path: &Path) -> Result<bool, CommandError> {
 }
 
 fn write_schema_json_to_path(schema_path: &Path) -> Result<(), CommandError> {
+    write_schema_json_to_path_with_mode(schema_path, false)
+}
+
+fn write_schema_json_replacing_path(schema_path: &Path) -> Result<(), CommandError> {
+    write_schema_json_to_path_with_mode(schema_path, true)
+}
+
+fn write_schema_json_to_path_with_mode(
+    schema_path: &Path,
+    replace_existing: bool,
+) -> Result<(), CommandError> {
     let schema_dir = schema_path
         .parent()
         .ok_or_else(|| CommandError::new("generation.failed", "Schema file path is invalid."))?;
@@ -261,7 +280,13 @@ fn write_schema_json_to_path(schema_path: &Path) -> Result<(), CommandError> {
 
     drop(temp_file);
 
-    match fs::hard_link(&temp_path, schema_path) {
+    let promote_result = if replace_existing {
+        fs::rename(&temp_path, schema_path)
+    } else {
+        fs::hard_link(&temp_path, schema_path)
+    };
+
+    match promote_result {
         Ok(()) => {
             let _ = fs::remove_file(&temp_path);
         }
@@ -362,4 +387,47 @@ pub fn promote_generated_overlay(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::{repo_handle_from_path, write_schema_json, BUNDLED_MODEL_SCHEMA_JSON};
+
+    #[test]
+    fn write_schema_json_replaces_stale_schema_file() {
+        let root = fresh_test_dir("replace-schema");
+        fs::create_dir(root.join("c4")).expect("create c4");
+        fs::write(root.join("c4/schema.json"), "{\"title\":\"stale\"}\n").expect("write schema");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        write_schema_json(&repo).expect("write schema");
+
+        assert_eq!(
+            fs::read_to_string(root.join("c4/schema.json")).expect("read schema"),
+            BUNDLED_MODEL_SCHEMA_JSON
+        );
+
+        cleanup(root);
+    }
+
+    fn fresh_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "c4lens-generated-overlay-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("create test dir");
+        path
+    }
+
+    fn cleanup(path: PathBuf) {
+        let _ = fs::remove_dir_all(path);
+    }
 }

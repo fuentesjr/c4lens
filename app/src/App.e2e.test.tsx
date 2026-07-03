@@ -4,7 +4,15 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleModel } from "./model/sample";
-import type { CodeRef, EffectiveModel, GenerationDiff, ScanSummary, SearchResults, ValidationReport } from "./model/types";
+import type {
+  CodeRef,
+  EffectiveModel,
+  GenerationDiff,
+  ScanSummary,
+  SearchResults,
+  SymbolSearchResult,
+  ValidationReport,
+} from "./model/types";
 
 type MockFlowNode = {
   id: string;
@@ -38,6 +46,12 @@ const ipcMocks = vi.hoisted(() => {
       onModelChanged: (payload: { repoId: string; sourceSha: string }) => void | Promise<void>;
       onValidationFailed: (payload: { repoId: string; validation: unknown }) => void | Promise<void>;
       onIndexUpdated?: (payload: { repoId: string; summary: ScanSummary }) => void | Promise<void>;
+      onScanProgress?: (payload: {
+        repoId: string;
+        done: number;
+        total: number;
+        message: string;
+      }) => void | Promise<void>;
     },
     unlisten: vi.fn(),
   };
@@ -51,6 +65,7 @@ const ipcMocks = vi.hoisted(() => {
     })),
     generateModel: vi.fn<() => Promise<GenerationDiff>>(async () => generationDiffFor()),
     getElementCode: vi.fn<(slug: string) => Promise<CodeRef | null>>(async () => null),
+    getElementSymbols: vi.fn<(slug: string, limit?: number) => Promise<SymbolSearchResult[]>>(async () => []),
     isTauriDesktop: vi.fn(() => false),
     listenToModelEvents: vi.fn(async (handlers: NonNullable<typeof state.handlers>) => {
       state.handlers = handlers;
@@ -66,6 +81,7 @@ const ipcMocks = vi.hoisted(() => {
       repo: { id: "sample", rootPath: "", name: "Sample" },
       model: null,
     })),
+    repairSchema: vi.fn<() => Promise<ValidationReport>>(async () => ({ ok: true, issues: [] })),
     scanCodebase: vi.fn<() => Promise<ScanSummary>>(async () => scanSummaryFor()),
     searchRepository: vi.fn<(params: { query: string; limit?: number }) => Promise<SearchResults>>(async () => ({
       query: "",
@@ -82,11 +98,13 @@ vi.mock("./ipc/client", () => ({
   fetchActiveModel: ipcMocks.fetchActiveModel,
   generateModel: ipcMocks.generateModel,
   getElementCode: ipcMocks.getElementCode,
+  getElementSymbols: ipcMocks.getElementSymbols,
   isTauriDesktop: ipcMocks.isTauriDesktop,
   listenToModelEvents: ipcMocks.listenToModelEvents,
   openInEditor: ipcMocks.openInEditor,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
   openRepositoryFromPath: ipcMocks.openRepositoryFromPath,
+  repairSchema: ipcMocks.repairSchema,
   scanCodebase: ipcMocks.scanCodebase,
   searchRepository: ipcMocks.searchRepository,
 }));
@@ -229,6 +247,8 @@ function resetDomAndRoute() {
   ipcMocks.generateModel.mockResolvedValue(generationDiffFor());
   ipcMocks.getElementCode.mockReset();
   ipcMocks.getElementCode.mockResolvedValue(null);
+  ipcMocks.getElementSymbols.mockReset();
+  ipcMocks.getElementSymbols.mockResolvedValue([]);
   ipcMocks.isTauriDesktop.mockReset();
   ipcMocks.isTauriDesktop.mockReturnValue(false);
   ipcMocks.openInEditor.mockReset();
@@ -241,6 +261,8 @@ function resetDomAndRoute() {
     repo: sampleModel.repo,
     model: sampleModel,
   });
+  ipcMocks.repairSchema.mockReset();
+  ipcMocks.repairSchema.mockResolvedValue({ ok: true, issues: [] });
   ipcMocks.scanCodebase.mockReset();
   ipcMocks.scanCodebase.mockResolvedValue(scanSummaryFor());
   ipcMocks.searchRepository.mockReset();
@@ -550,6 +572,68 @@ describe("App source preview behavior", () => {
     cleanup();
   });
 
+  it("loads indexed code symbols for the selected element and opens a symbol", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.getElementSymbols.mockResolvedValueOnce([
+      {
+        path: "src/api/main.rs",
+        name: "ApiServer",
+        qualifiedName: null,
+        kind: "struct",
+        range: {
+          startLine: 4,
+          startColumn: 1,
+          endLine: 8,
+          endColumn: 1,
+        },
+      },
+      {
+        path: "src/api/main.rs",
+        name: "run_api",
+        qualifiedName: null,
+        kind: "function",
+        range: {
+          startLine: 12,
+          startColumn: 1,
+          endLine: 16,
+          endColumn: 1,
+        },
+      },
+    ]);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    await act(async () => {
+      systemNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.getElementSymbols).toHaveBeenCalledWith("acme_api", 12);
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Code Symbols");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("ApiServer");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("function - src/api/main.rs:12");
+
+    const symbolButton = Array.from(container.querySelectorAll<HTMLButtonElement>(".code-symbol-list button")).find(
+      (button) => button.textContent?.includes("run_api"),
+    );
+    expect(symbolButton).not.toBeNull();
+
+    await act(async () => {
+      symbolButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.openInEditor).toHaveBeenCalledWith("src/api/main.rs", 12, 1);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened src/api/main.rs:12");
+
+    cleanup();
+  });
+
   it("shows a quiet not-indexed state when selected element source is unavailable", async () => {
     ipcMocks.isTauriDesktop.mockReturnValue(true);
     ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
@@ -824,6 +908,48 @@ describe("App validation warning surface", () => {
 
     cleanup();
   });
+
+  it("offers schema repair when the repo schema drifts from the bundled schema", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    const driftModel = effectiveModelWithName("Schema Drift Architecture");
+    driftModel.validation = {
+      ok: true,
+      sourceSha: driftModel.sourceSha,
+      issues: [
+        {
+          severity: "warning",
+          stage: "semantic",
+          code: "schema.drift",
+          message: "c4/schema.json differs from the bundled c4lens schema.",
+          path: "c4/schema.json",
+        },
+      ],
+    };
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(driftModel);
+    ipcMocks.repairSchema.mockResolvedValueOnce({
+      ok: true,
+      sourceSha: driftModel.sourceSha,
+      issues: [],
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("schema.drift");
+    const repairButton = getDetailAction(container, "Refresh schema");
+    expect(repairButton).not.toBeNull();
+
+    await act(async () => {
+      repairButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.repairSchema).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Schema refreshed");
+    expect(container.querySelector("aside.detail-panel")?.textContent).not.toContain("schema.drift");
+
+    cleanup();
+  });
 });
 
 describe("App model event behavior", () => {
@@ -881,6 +1007,53 @@ describe("App model event behavior", () => {
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("parse.invalid_yaml");
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Failed to parse c4/model.yml.");
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("c4/model.yml");
+
+    cleanup();
+  });
+
+  it("updates scan progress for the active repo and ignores stale progress", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(ipcMocks.state.handlers).not.toBeNull();
+    await act(async () => {
+      await ipcMocks.state.handlers!.onScanProgress?.({
+        repoId: "stale-repo",
+        done: 0,
+        total: 1,
+        message: "Scanning stale repo",
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain("Scanning stale repo");
+
+    await act(async () => {
+      await ipcMocks.state.handlers!.onScanProgress?.({
+        repoId: sampleModel.repo.id,
+        done: 0,
+        total: 1,
+        message: "Scanning codebase",
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Scanning codebase: 0/1");
+
+    await act(async () => {
+      await ipcMocks.state.handlers!.onScanProgress?.({
+        repoId: sampleModel.repo.id,
+        done: 1,
+        total: 1,
+        message: "Scan complete",
+      });
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Scan complete");
 
     cleanup();
   });

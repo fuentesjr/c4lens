@@ -9,6 +9,7 @@ import type {
   RepoHandle,
   ScanSummary,
   SearchResults,
+  SymbolSearchResult,
   ApplyGeneratedParams,
   ValidationReport,
   ViewExportFormat,
@@ -35,10 +36,18 @@ export interface IndexUpdatedPayload {
   summary: ScanSummary;
 }
 
+export interface ScanProgressPayload {
+  repoId: string;
+  done: number;
+  total: number;
+  message: string;
+}
+
 export interface ModelEventHandlers {
   onModelChanged: (payload: ModelChangedPayload) => void | Promise<void>;
   onValidationFailed: (payload: ValidationFailedPayload) => void | Promise<void>;
   onIndexUpdated?: (payload: IndexUpdatedPayload) => void | Promise<void>;
+  onScanProgress?: (payload: ScanProgressPayload) => void | Promise<void>;
 }
 
 export function isTauriDesktop(): boolean {
@@ -114,12 +123,28 @@ export async function applyGenerated(params: ApplyGeneratedParams): Promise<void
   await invoke<void>("apply_generated", { params });
 }
 
+export async function repairSchema(): Promise<ValidationReport> {
+  if (!isTauriDesktop()) {
+    throw new Error("Schema repair is available in the Tauri desktop shell");
+  }
+
+  return await invoke<ValidationReport>("repair_schema");
+}
+
 export async function getElementCode(slug: string): Promise<CodeRef | null> {
   if (!isTauriDesktop()) {
     return null;
   }
 
   return await invoke<CodeRef | null>("get_element_code", { params: { slug } });
+}
+
+export async function getElementSymbols(slug: string, limit = 12): Promise<SymbolSearchResult[]> {
+  if (!isTauriDesktop()) {
+    return [];
+  }
+
+  return await invoke<SymbolSearchResult[]>("get_element_symbols", { params: { slug, limit } });
 }
 
 export async function searchRepository(params: { query: string; limit?: number }): Promise<SearchResults> {
@@ -167,10 +192,14 @@ export async function listenToModelEvents(handlers: ModelEventHandlers): Promise
   const unlistenIndexUpdated = await listen<IndexUpdatedPayload>("index-updated", (event) => {
     void handlers.onIndexUpdated?.(event.payload);
   });
+  const unlistenScanProgress = await listen<ScanProgressPayload>("scan-progress", (event) => {
+    void handlers.onScanProgress?.(event.payload);
+  });
 
   return () => {
     unlistenModelChanged();
     unlistenValidationFailed();
     unlistenIndexUpdated();
+    unlistenScanProgress();
   };
 }

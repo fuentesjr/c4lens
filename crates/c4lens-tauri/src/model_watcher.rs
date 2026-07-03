@@ -5,19 +5,22 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use c4lens_core::{
-    load_effective_model_from_repo_recovering_generated_overlay, CommandError, RepoHandle,
-    ValidationIssue, ValidationReport, ValidationSeverity, ValidationStage,
+    load_effective_model_from_repo_recovering_generated_overlay, scan_repo, CommandError,
+    RepoHandle, ScanOptions, ScanSummary, ValidationIssue, ValidationReport, ValidationSeverity,
+    ValidationStage,
 };
 use tauri::{Emitter, Window};
 
 use crate::events::{
-    ModelChangedPayload, ValidationFailedPayload, MODEL_CHANGED, VALIDATION_FAILED,
+    IndexUpdatedPayload, ModelChangedPayload, ScanProgressPayload, ValidationFailedPayload,
+    INDEX_UPDATED, MODEL_CHANGED, SCAN_PROGRESS, VALIDATION_FAILED,
 };
 
 const AUTHORED_MODEL_PATH: &str = "c4/model.yml";
 const GENERATED_MODEL_PATH: &str = "c4/model.generated.yml";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const DEBOUNCE_INTERVAL: Duration = Duration::from_millis(150);
+const MODEL_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(150);
+const SOURCE_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct ModelWatcherHandle {
     stop: Sender<()>,
@@ -44,7 +47,8 @@ pub fn spawn_model_watcher(repo: RepoHandle, window: Window) -> ModelWatcherHand
 }
 
 fn watch_model_files(repo: RepoHandle, window: Window, stop_rx: Receiver<()>) {
-    let mut previous = snapshot_control_files(&repo);
+    let mut previous_control = snapshot_control_files(&repo);
+    let mut previous_source = snapshot_source_files(&repo);
 
     loop {
         match stop_rx.recv_timeout(POLL_INTERVAL) {
@@ -52,18 +56,34 @@ fn watch_model_files(repo: RepoHandle, window: Window, stop_rx: Receiver<()>) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
 
-        let next = snapshot_control_files(&repo);
-        if next == previous {
+        let next_control = snapshot_control_files(&repo);
+        let next_source = snapshot_source_files(&repo);
+        let control_changed = next_control != previous_control;
+        let source_changed = next_source != previous_source;
+        if !control_changed && !source_changed {
             continue;
         }
 
-        match stop_rx.recv_timeout(DEBOUNCE_INTERVAL) {
+        let debounce = if source_changed {
+            SOURCE_DEBOUNCE_INTERVAL
+        } else {
+            MODEL_DEBOUNCE_INTERVAL
+        };
+        match stop_rx.recv_timeout(debounce) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
 
-        previous = snapshot_control_files(&repo);
-        emit_model_watch_evaluation(&window, evaluate_model_change(&repo));
+        let debounced_control = snapshot_control_files(&repo);
+        let debounced_source = snapshot_source_files(&repo);
+        if debounced_control != previous_control {
+            previous_control = debounced_control;
+            emit_model_watch_evaluation(&window, evaluate_model_change(&repo));
+        }
+        if debounced_source != previous_source {
+            previous_source = debounced_source;
+            emit_source_watch_evaluation(&window, &repo);
+        }
     }
 }
 
@@ -95,6 +115,41 @@ fn emit_model_watch_evaluation(window: &Window, evaluation: ModelWatchEvaluation
         ModelWatchEvaluation::ValidationFailed(payload) => {
             let _ = window.emit(VALIDATION_FAILED, payload);
         }
+    }
+}
+
+pub(crate) fn evaluate_source_change(repo: &RepoHandle) -> Result<ScanSummary, CommandError> {
+    scan_repo(repo.clone(), ScanOptions::default())
+}
+
+fn emit_source_watch_evaluation(window: &Window, repo: &RepoHandle) {
+    let _ = window.emit(
+        SCAN_PROGRESS,
+        ScanProgressPayload {
+            repo_id: repo.id.clone(),
+            done: 0,
+            total: 1,
+            message: "Re-indexing changed sources".to_string(),
+        },
+    );
+
+    if let Ok(summary) = evaluate_source_change(repo) {
+        let _ = window.emit(
+            INDEX_UPDATED,
+            IndexUpdatedPayload {
+                repo_id: summary.repo.id.clone(),
+                summary,
+            },
+        );
+        let _ = window.emit(
+            SCAN_PROGRESS,
+            ScanProgressPayload {
+                repo_id: repo.id.clone(),
+                done: 1,
+                total: 1,
+                message: "Source index updated".to_string(),
+            },
+        );
     }
 }
 
@@ -167,12 +222,106 @@ enum ControlFileSnapshot {
     Inaccessible(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceFilesSnapshot {
+    files: std::collections::BTreeMap<String, SourceFileSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceFileSnapshot {
+    Present {
+        len: u64,
+        modified_nanos: u128,
+        is_symlink: bool,
+    },
+    Inaccessible(String),
+}
+
 fn snapshot_control_files(repo: &RepoHandle) -> ControlFilesSnapshot {
     let root = PathBuf::from(&repo.root_path);
     ControlFilesSnapshot {
         authored: snapshot_control_file(&root.join(AUTHORED_MODEL_PATH)),
         generated: snapshot_control_file(&root.join(GENERATED_MODEL_PATH)),
     }
+}
+
+fn snapshot_source_files(repo: &RepoHandle) -> SourceFilesSnapshot {
+    let root = PathBuf::from(&repo.root_path);
+    let mut files = std::collections::BTreeMap::new();
+    snapshot_source_dir(&root, &root, &mut files);
+    SourceFilesSnapshot { files }
+}
+
+fn snapshot_source_dir(
+    root: &Path,
+    current: &Path,
+    files: &mut std::collections::BTreeMap<String, SourceFileSnapshot>,
+) {
+    let entries = match fs::read_dir(current) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if let Some(path) = relative_posix_path(root, current) {
+                files.insert(path, SourceFileSnapshot::Inaccessible(error.to_string()));
+            }
+            return;
+        }
+    };
+
+    let mut entries = entries.collect::<Result<Vec<_>, _>>().unwrap_or_default();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if let Some(relative_path) = relative_posix_path(root, &path) {
+                    files.insert(
+                        relative_path,
+                        SourceFileSnapshot::Inaccessible(error.to_string()),
+                    );
+                }
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            if should_snapshot_source_dir(&path) {
+                snapshot_source_dir(root, &path, files);
+            }
+            continue;
+        }
+
+        let Some(relative_path) = relative_posix_path(root, &path) else {
+            continue;
+        };
+        files.insert(
+            relative_path,
+            SourceFileSnapshot::Present {
+                len: metadata.len(),
+                modified_nanos: modified_nanos(&metadata),
+                is_symlink: metadata.file_type().is_symlink(),
+            },
+        );
+    }
+}
+
+fn should_snapshot_source_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    !matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | "tmp"
+            | "log"
+            | "coverage"
+            | "c4"
+    )
 }
 
 fn snapshot_control_file(path: &Path) -> ControlFileSnapshot {
@@ -184,19 +333,40 @@ fn snapshot_control_file(path: &Path) -> ControlFileSnapshot {
         Err(error) => return ControlFileSnapshot::Inaccessible(error.to_string()),
     };
 
-    let modified_nanos = metadata
+    ControlFileSnapshot::Present {
+        len: metadata.len(),
+        modified_nanos: modified_nanos(&metadata),
+        is_dir: metadata.is_dir(),
+        is_symlink: metadata.file_type().is_symlink(),
+    }
+}
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+    metadata
         .modified()
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    ControlFileSnapshot::Present {
-        len: metadata.len(),
-        modified_nanos,
-        is_dir: metadata.is_dir(),
-        is_symlink: metadata.file_type().is_symlink(),
-    }
+fn relative_posix_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            std::path::Component::CurDir => Some(String::new()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(
+        parts
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 #[cfg(test)]
@@ -210,7 +380,9 @@ mod tests {
 
     use c4lens_core::{repo_handle_from_path, ValidationStage};
 
-    use super::{evaluate_model_change, ModelWatchEvaluation, ModelWatcherHandle};
+    use super::{
+        evaluate_model_change, snapshot_source_files, ModelWatchEvaluation, ModelWatcherHandle,
+    };
 
     #[test]
     fn evaluates_valid_model_change_as_model_changed() {
@@ -263,6 +435,28 @@ mod tests {
     }
 
     #[test]
+    fn source_snapshot_ignores_control_files_and_detects_source_edits() {
+        let root = fresh_test_dir("source-snapshot");
+        write_model(&root, "name: Watched Model\n");
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let initial = snapshot_source_files(&repo);
+
+        write_model(&root, "name: Renamed Model\n");
+        assert_eq!(snapshot_source_files(&repo), initial);
+
+        write_file(
+            &root,
+            "src/main.rs",
+            "fn main() {\n    println!(\"changed\");\n}\n",
+        );
+        assert_ne!(snapshot_source_files(&repo), initial);
+
+        cleanup(root);
+    }
+
+    #[test]
     fn watcher_handle_drop_signals_thread_to_stop() {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (stopped_tx, stopped_rx) = mpsc::channel();
@@ -294,6 +488,12 @@ mod tests {
     fn write_model(root: &Path, contents: &str) {
         fs::create_dir_all(root.join("c4")).expect("create c4 dir");
         fs::write(root.join("c4/model.yml"), contents).expect("write model");
+    }
+
+    fn write_file(root: &Path, relative_path: &str, contents: &str) {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, contents).expect("write file");
     }
 
     fn cleanup(root: PathBuf) {

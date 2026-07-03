@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     BaseElement, CommandError, Container, EffectiveModel, ElementNode, ElementType, Lifecycle,
     Model, Relationship, RepoHandle, SourceKind, System, ValidationIssue, ValidationReport,
-    ValidationSeverity, ValidationStage,
+    ValidationSeverity, ValidationStage, BUNDLED_MODEL_SCHEMA_JSON, SCHEMA_PATH,
 };
 
 mod yaml_preflight;
@@ -141,6 +141,7 @@ fn build_effective_model(
     validate_relationships(&indexed_relationships, &elements_by_slug)?;
     issues.extend(validate_external_system_containers(&model));
     issues.extend(validate_code_paths(repo_root, &elements_by_slug)?);
+    issues.extend(validate_schema_json_drift(repo_root)?);
 
     Ok(EffectiveModel {
         repo,
@@ -269,6 +270,58 @@ fn load_optional_model_source(
         &contents,
         generated,
     )?))
+}
+
+fn validate_schema_json_drift(repo_root: &Path) -> Result<Vec<ValidationIssue>, CommandError> {
+    let path = repo_root.join(SCHEMA_PATH);
+    if !control_file_is_present(&path)? {
+        return Ok(Vec::new());
+    }
+
+    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+        CommandError::with_details(
+            "path.invalid",
+            format!("Unable to inspect {SCHEMA_PATH}."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(CommandError::with_details(
+            "repo.path_denied",
+            "Schema file must not be a symlink.",
+            serde_json::json!({ "path": SCHEMA_PATH }),
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(CommandError::with_details(
+            "path.invalid_target",
+            "Schema path exists but is not a file.",
+            serde_json::json!({ "path": SCHEMA_PATH }),
+        ));
+    }
+
+    let resolved_path = resolve_control_file(repo_root, &path, SCHEMA_PATH)?;
+    let contents = fs::read_to_string(&resolved_path).map_err(|error| {
+        CommandError::with_details(
+            "model.invalid",
+            format!("Failed to read {SCHEMA_PATH}."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    if contents == BUNDLED_MODEL_SCHEMA_JSON {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![ValidationIssue {
+        severity: ValidationSeverity::Warning,
+        stage: ValidationStage::Semantic,
+        code: "schema.drift".to_string(),
+        message: format!("{SCHEMA_PATH} differs from the bundled c4lens schema."),
+        path: Some(SCHEMA_PATH.to_string()),
+        line: None,
+        column: None,
+    }])
 }
 
 fn load_model_source_from_contents(
@@ -3448,6 +3501,26 @@ systems:
         assert_eq!(
             effective.validation.issues[0].code,
             "semantic.code_path_missing"
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn records_schema_json_drift_as_semantic_warning() {
+        let root = fresh_test_dir("schema-drift");
+        write_model(&root, "name: Schema Drift\n");
+        fs::write(root.join("c4/schema.json"), "{\"title\":\"stale\"}\n").expect("write schema");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let effective = load_effective_model_from_repo(repo).expect("schema drift is warning");
+
+        assert!(effective.validation.ok);
+        assert_eq!(effective.validation.issues.len(), 1);
+        assert_eq!(effective.validation.issues[0].code, "schema.drift");
+        assert_eq!(
+            effective.validation.issues[0].path.as_deref(),
+            Some("c4/schema.json")
         );
 
         cleanup(root);

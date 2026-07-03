@@ -54,4 +54,6 @@ run_cli generate --repo "$repo" --check --json >/dev/null
 test -f "$repo/c4/model.generated.yml"
 test -f "$repo/c4/schema.json"
 
+npm --workspace app run test -- App.e2e.test.tsx
+
 printf '%s\n' "MVP smoke passed"

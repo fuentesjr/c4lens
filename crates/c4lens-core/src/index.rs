@@ -161,6 +161,56 @@ LIMIT 1
     }))
 }
 
+pub fn list_element_symbols(
+    repo: &RepoHandle,
+    index_path: &Path,
+    element_slug: &str,
+    limit: usize,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let connection = Connection::open(index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+    let repo_root = PathBuf::from(&repo.root_path);
+    let mut scopes = indexed_element_symbol_scopes(&connection, &repo.id, element_slug)?;
+
+    if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
+        if let Some(element) = model.elements_by_slug.get(element_slug) {
+            if let Some(code_path) = element.base.code.as_deref() {
+                if let Some(scope) = normalize_repo_relative_code_scope(&repo_root, code_path) {
+                    scopes.push(scope);
+                }
+            }
+        }
+    }
+
+    scopes.sort();
+    scopes.dedup();
+
+    let mut seen = BTreeSet::new();
+    let mut symbols = Vec::new();
+    for scope in scopes {
+        for symbol in symbols_for_scope(&connection, &repo.id, &scope, limit)? {
+            let key = (
+                symbol.path.clone(),
+                symbol.range.start_line,
+                symbol.range.start_column,
+                symbol.name.clone(),
+            );
+            if seen.insert(key) {
+                symbols.push(symbol);
+            }
+            if symbols.len() >= limit {
+                return Ok(symbols);
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
 pub fn search_repo(
     repo: &RepoHandle,
     index_path: Option<PathBuf>,
@@ -337,6 +387,134 @@ LIMIT ?3
         })
         .map_err(sqlite_error)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ElementSymbolScope {
+    File(String),
+    Directory(String),
+}
+
+fn indexed_element_symbol_scopes(
+    connection: &Connection,
+    repo_id: &str,
+    element_slug: &str,
+) -> Result<Vec<ElementSymbolScope>, CommandError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT files.path
+FROM element_sources
+JOIN files ON files.id = element_sources.file_id
+WHERE element_sources.repo_id = ?1
+  AND element_sources.element_slug = ?2
+ORDER BY element_sources.source_key
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id, element_slug], |row| {
+            row.get::<_, String>(0).map(ElementSymbolScope::File)
+        })
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+fn symbols_for_scope(
+    connection: &Connection,
+    repo_id: &str,
+    scope: &ElementSymbolScope,
+    limit: usize,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    match scope {
+        ElementSymbolScope::File(path) => symbols_for_file(connection, repo_id, path, limit),
+        ElementSymbolScope::Directory(path) => {
+            symbols_for_directory(connection, repo_id, path, limit)
+        }
+    }
+}
+
+fn symbols_for_file(
+    connection: &Connection,
+    repo_id: &str,
+    path: &str,
+    limit: usize,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT files.path,
+       symbols.name,
+       symbols.qualified_name,
+       symbols.kind,
+       symbols.start_line,
+       symbols.start_column,
+       symbols.end_line,
+       symbols.end_column
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+  AND files.path = ?2
+ORDER BY files.path, symbols.start_line, symbols.start_column, symbols.name
+LIMIT ?3
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id, path, limit as i64], symbol_from_row)
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+fn symbols_for_directory(
+    connection: &Connection,
+    repo_id: &str,
+    path: &str,
+    limit: usize,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    let prefix = format!("{path}/");
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT files.path,
+       symbols.name,
+       symbols.qualified_name,
+       symbols.kind,
+       symbols.start_line,
+       symbols.start_column,
+       symbols.end_line,
+       symbols.end_column
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+  AND substr(files.path, 1, ?2) = ?3
+ORDER BY files.path, symbols.start_line, symbols.start_column, symbols.name
+LIMIT ?4
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(
+            params![repo_id, prefix.len() as i64, prefix, limit as i64],
+            symbol_from_row,
+        )
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+fn symbol_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolSearchResult> {
+    Ok(SymbolSearchResult {
+        path: row.get(0)?,
+        name: row.get(1)?,
+        qualified_name: row.get(2)?,
+        kind: row.get(3)?,
+        range: SourceRange {
+            start_line: row.get::<_, u32>(4)?,
+            start_column: row.get::<_, u32>(5)?,
+            end_line: row.get::<_, u32>(6)?,
+            end_column: row.get::<_, u32>(7)?,
+        },
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1203,6 +1381,36 @@ fn normalize_repo_relative_code_file(repo_root: &Path, code_path: &str) -> Optio
     relative_posix_path(repo_root, &joined)
 }
 
+fn normalize_repo_relative_code_scope(
+    repo_root: &Path,
+    code_path: &str,
+) -> Option<ElementSymbolScope> {
+    let path = Path::new(code_path);
+    if path.is_absolute()
+        || code_path.contains('\\')
+        || code_path.contains('\0')
+        || code_path.split('/').any(|part| part.is_empty())
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return None;
+    }
+
+    let resolved = repo_root.join(path).canonicalize().ok()?;
+    if !resolved.starts_with(repo_root) {
+        return None;
+    }
+    let relative_path = relative_posix_path(repo_root, &resolved)?;
+    if resolved.is_file() {
+        Some(ElementSymbolScope::File(relative_path))
+    } else if resolved.is_dir() {
+        Some(ElementSymbolScope::Directory(relative_path))
+    } else {
+        None
+    }
+}
+
 fn resolve_repo_file(repo_root: &Path, relative_path: &str) -> Result<PathBuf, CommandError> {
     let path = Path::new(relative_path);
     if path.is_absolute()
@@ -1385,8 +1593,9 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use crate::{
-        acquire_repo_write_lock, get_element_code, list_internal_crate_import_edges,
-        repo_handle_from_path, scan_repo, search_repo, ScanOptions,
+        acquire_repo_write_lock, get_element_code, list_element_symbols,
+        list_internal_crate_import_edges, repo_handle_from_path, scan_repo, search_repo,
+        ScanOptions,
     };
 
     use super::migrate_index;
@@ -1682,6 +1891,60 @@ systems:
 
         assert_eq!(error.code, "search.query_invalid");
 
+        cleanup(root);
+    }
+
+    #[test]
+    fn list_element_symbols_returns_symbols_under_element_code_directory() {
+        let root = fresh_test_dir("element-symbols-code-dir");
+        let index_root = fresh_test_dir("element-symbols-code-dir-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Symbol Repo
+systems:
+  app:
+    name: App
+    containers:
+      api:
+        name: API
+        components:
+          billing:
+            name: Billing
+            code: src/billing
+"#,
+        );
+        write_file(
+            &root,
+            "src/billing/mod.rs",
+            "pub struct BillingWorker;\npub fn bill_customer() {}\n",
+        );
+        write_file(&root, "src/other/mod.rs", "pub fn unrelated() {}\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let symbols = list_element_symbols(&repo, &db_path, "billing", 10).expect("list symbols");
+
+        let names = symbols
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["BillingWorker", "bill_customer"]);
+        assert!(symbols
+            .iter()
+            .all(|symbol| symbol.path == "src/billing/mod.rs"));
+
+        cleanup(index_root);
         cleanup(root);
     }
 

@@ -24,9 +24,11 @@ fn main() {
             commands::repo::get_model,
             commands::repo::scan_codebase,
             commands::repo::get_element_code,
+            commands::repo::get_element_symbols,
             commands::repo::search,
             commands::repo::generate_model,
             commands::repo::apply_generated,
+            commands::repo::repair_schema,
             commands::repo::open_in_editor,
             commands::repo::export_view,
         ])

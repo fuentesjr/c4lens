@@ -22,8 +22,18 @@ listed here are planned or deferred capabilities, not regressions.
 | Persisted color theme | Implemented | The renderer stores the selected light/dark theme locally and reapplies it on startup. |
 | Last repository restore | Implemented | The desktop shell remembers the last opened repository path and reopens it when no active model is already loaded. |
 | Layout cache acceptance inputs | Implemented | ELK cache keys include layout options and measured node dimensions, not only model/source/scope data. |
-| MVP smoke command | Implemented | `npm run smoke:mvp` validates the CLI path from temporary repo creation through scan, generate, write, and drift check. |
+| MVP smoke command | Implemented | `npm run smoke:mvp` validates the CLI path from temporary repo creation through scan, generate, write, drift check, and renderer E2E workflows. |
 | Roadmap and quality-gate docs | Implemented | README and roadmap now document the MVP hardening gate and remaining deferred work. |
+
+## MVP Readiness
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Code symbol detail panel | Implemented | Selected elements can show indexed symbols from their file or code directory and jump directly to a symbol location. |
+| Scan progress events | Implemented | Desktop scan and generate-with-scan emit repo-scoped `scan-progress` events consumed by the renderer status bar. |
+| Source change re-indexing | Implemented | The watcher detects non-control source edits, runs an incremental scan, and emits `index-updated`. |
+| Schema drift repair | Implemented | Repos with stale `c4/schema.json` get a validation warning and a desktop repair action that refreshes the bundled schema. |
+| GUI smoke coverage | Implemented | `npm run smoke:mvp` now includes the renderer E2E workflow tests in addition to the CLI smoke path. |
 
 ## Later Backlog
 

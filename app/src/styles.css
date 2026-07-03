@@ -708,6 +708,54 @@ input {
   white-space: pre-wrap;
 }
 
+.code-symbols {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.code-symbol-list {
+  display: grid;
+  gap: 6px;
+}
+
+.code-symbol-list button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e0e5eb;
+  border-radius: 7px;
+  background: #fbfcfd;
+  color: #26323f;
+  cursor: pointer;
+  text-align: left;
+}
+
+.code-symbol-list button:hover,
+.code-symbol-list button:focus {
+  border-color: #167d7f;
+  outline: 0;
+}
+
+.code-symbol-list strong,
+.code-symbol-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-symbol-list strong {
+  font-size: 12px;
+}
+
+.code-symbol-list span {
+  color: #687483;
+  font-size: 11px;
+}
+
 .detail-panel h3 {
   margin: 0 0 10px;
   font-size: 13px;
@@ -875,6 +923,21 @@ input {
   border-color: #354656;
   background: #1d2a36;
   color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .code-symbol-list button {
+  border-color: #354656;
+  background: #1d2a36;
+  color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .code-symbol-list button:hover,
+:root[data-theme="dark"] .code-symbol-list button:focus {
+  border-color: #23a0a3;
+}
+
+:root[data-theme="dark"] .code-symbol-list span {
+  color: #9fb0c3;
 }
 
 :root[data-theme="dark"] .search-results button:hover,

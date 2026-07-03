@@ -8,13 +8,14 @@ use base64::{engine::general_purpose, Engine as _};
 use c4lens_core::{
     acquire_repo_write_lock, build_minimal_generated_model_from_authored_system,
     canonicalize_repo_root, default_index_path, get_element_code as core_get_element_code,
+    list_element_symbols as core_list_element_symbols,
     load_effective_model_from_repo_recovering_generated_overlay, promote_generated_overlay,
     render_generated_model_yaml, repo_handle_from_path, repo_scan_token, scan_repo, search_repo,
     single_authored_internal_system_for_generation, validate_generated_overlay_paths,
     validate_generated_overlay_yaml_with_report, write_generated_overlay_to_temp_file,
-    write_schema_json_if_missing, CodeRef, CommandError, EffectiveModel, Model, RepoHandle,
-    ScanOptions, ScanSummary, SearchResults, ValidationReport, BUNDLED_MODEL_SCHEMA_JSON,
-    GENERATED_MODEL_PATH,
+    write_schema_json, write_schema_json_if_missing, CodeRef, CommandError, EffectiveModel, Model,
+    RepoHandle, ScanOptions, ScanSummary, SearchResults, SymbolSearchResult, ValidationReport,
+    BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH,
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,10 @@ use sha2::{Digest, Sha256};
 use tauri::{command, Emitter, State, Window};
 
 use crate::app_state::AppState;
-use crate::events::{IndexUpdatedPayload, ModelChangedPayload, INDEX_UPDATED, MODEL_CHANGED};
+use crate::events::{
+    IndexUpdatedPayload, ModelChangedPayload, ScanProgressPayload, INDEX_UPDATED, MODEL_CHANGED,
+    SCAN_PROGRESS,
+};
 use crate::model_watcher::spawn_model_watcher;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -36,6 +40,13 @@ pub struct ScanCodebaseParams {
 #[serde(rename_all = "camelCase")]
 pub struct GetElementCodeParams {
     pub slug: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetElementSymbolsParams {
+    pub slug: String,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -212,7 +223,9 @@ pub fn scan_codebase(
 ) -> Result<ScanSummary, CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
     let force = params.unwrap_or_default().force;
+    emit_scan_progress(&window, &repo, 0, 1, "Scanning codebase");
     let summary = scan_codebase_for_repo(repo, force, None)?;
+    emit_scan_progress(&window, &summary.repo, 1, 1, "Scan complete");
 
     let _ = window.emit(
         INDEX_UPDATED,
@@ -235,6 +248,15 @@ pub fn get_element_code(
 }
 
 #[command]
+pub fn get_element_symbols(
+    params: GetElementSymbolsParams,
+    state: State<AppState>,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    get_element_symbols_for_repo(&repo, &params.slug, params.limit, None)
+}
+
+#[command]
 pub fn search(params: SearchParams, state: State<AppState>) -> Result<SearchResults, CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
     search_repo_for_repo(&repo, &params.query, params.limit, None)
@@ -243,10 +265,19 @@ pub fn search(params: SearchParams, state: State<AppState>) -> Result<SearchResu
 #[command]
 pub fn generate_model(
     params: Option<GenerateModelParams>,
+    window: Window,
     state: State<AppState>,
 ) -> Result<GenerationDiff, CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
-    let diff = generate_model_for_repo(repo, params.unwrap_or_default(), None)?;
+    let params = params.unwrap_or_default();
+    let scan_first = params.scan_first;
+    if params.scan_first {
+        emit_scan_progress(&window, &repo, 0, 1, "Scanning before generation");
+    }
+    let diff = generate_model_for_repo(repo, params, None)?;
+    if scan_first {
+        emit_scan_progress(&window, &diff.repo, 1, 1, "Scan complete");
+    }
     state.generation_candidates.store(diff.clone())?;
     Ok(diff)
 }
@@ -276,6 +307,25 @@ pub fn apply_generated(
     }
 
     Ok(())
+}
+
+#[command]
+pub fn repair_schema(
+    window: Window,
+    state: State<AppState>,
+) -> Result<ValidationReport, CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    let validation = repair_schema_for_repo(&repo)?;
+    let model = load_effective_model_from_repo_recovering_generated_overlay(repo)?;
+    let _ = window.emit(
+        MODEL_CHANGED,
+        ModelChangedPayload {
+            repo_id: model.repo.id.clone(),
+            source_sha: model.source_sha.clone(),
+            validation: model.validation.clone(),
+        },
+    );
+    Ok(validation)
 }
 
 #[command]
@@ -313,6 +363,29 @@ fn active_repo_from_mutex(
         .ok_or_else(|| CommandError::new("repo.not_open", "No repository is open."))
 }
 
+fn emit_scan_progress(
+    window: &Window,
+    repo: &RepoHandle,
+    done: usize,
+    total: usize,
+    message: &str,
+) {
+    let _ = window.emit(
+        SCAN_PROGRESS,
+        ScanProgressPayload {
+            repo_id: repo.id.clone(),
+            done,
+            total,
+            message: message.to_string(),
+        },
+    );
+}
+
+fn repair_schema_for_repo(repo: &RepoHandle) -> Result<ValidationReport, CommandError> {
+    write_schema_json(repo)?;
+    Ok(load_effective_model_from_repo_recovering_generated_overlay(repo.clone())?.validation)
+}
+
 fn get_element_code_for_repo(
     repo: &RepoHandle,
     slug: &str,
@@ -323,6 +396,19 @@ fn get_element_code_for_repo(
         return Ok(None);
     }
     core_get_element_code(repo, &index_path, slug)
+}
+
+fn get_element_symbols_for_repo(
+    repo: &RepoHandle,
+    slug: &str,
+    limit: Option<usize>,
+    index_path: Option<PathBuf>,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    let index_path = index_path.unwrap_or_else(|| default_index_path(repo));
+    if !index_path.is_file() {
+        return Ok(Vec::new());
+    }
+    core_list_element_symbols(repo, &index_path, slug, limit.unwrap_or(12))
 }
 
 fn search_repo_for_repo(
@@ -1114,11 +1200,11 @@ mod tests {
     use super::{
         active_repo_from_mutex, apply_generated_candidate_to_repo,
         apply_generated_candidate_to_repo_with_hook, export_view_for_repo_with_picker,
-        generate_model_for_repo, get_element_code_for_repo, open_command_for_os,
-        open_in_editor_with_opener, resolve_repo_relative_path, scan_codebase_for_repo,
-        search_repo_for_repo, verify_apply_generated_params, ApplyGeneratedParams,
-        ApplyGeneratedSelection, ExportFormat, ExportViewParams, ExportViewScope,
-        GenerateModelParams, GenerationDiff,
+        generate_model_for_repo, get_element_code_for_repo, get_element_symbols_for_repo,
+        open_command_for_os, open_in_editor_with_opener, repair_schema_for_repo,
+        resolve_repo_relative_path, scan_codebase_for_repo, search_repo_for_repo,
+        verify_apply_generated_params, ApplyGeneratedParams, ApplyGeneratedSelection, ExportFormat,
+        ExportViewParams, ExportViewScope, GenerateModelParams, GenerationDiff,
     };
 
     fn build_apply_params_from_diff(diff: &GenerationDiff) -> ApplyGeneratedParams {
@@ -1516,6 +1602,74 @@ systems:
                 .expect("missing index should be a cache miss");
 
         assert!(code_ref.is_none());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn get_element_symbols_for_repo_reads_symbols_under_element_code_path() {
+        let root = fresh_test_dir("element-symbols-command-repo");
+        let index_root = fresh_test_dir("element-symbols-command-index");
+        let index_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Symbol Repo
+systems:
+  app:
+    name: App
+    containers:
+      api:
+        name: API
+        components:
+          billing:
+            name: Billing
+            code: src/billing
+"#,
+        );
+        write_file(
+            &root,
+            "src/billing/mod.rs",
+            "pub struct BillingWorker;\npub fn bill_customer() {}\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_codebase_for_repo(repo.clone(), false, Some(index_path.clone())).expect("scan repo");
+
+        let symbols = get_element_symbols_for_repo(&repo, "billing", Some(4), Some(index_path))
+            .expect("list symbols");
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "BillingWorker");
+        assert_eq!(symbols[0].path, "src/billing/mod.rs");
+        assert_eq!(symbols[1].name, "bill_customer");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn repair_schema_for_repo_replaces_stale_schema_and_clears_warning() {
+        let root = fresh_test_dir("repair-schema-command-repo");
+        write_file(&root, "c4/model.yml", "name: Repair Schema\n");
+        write_file(&root, "c4/schema.json", "{\"title\":\"stale\"}\n");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let before = load_effective_model_from_repo_recovering_generated_overlay(repo.clone())
+            .expect("load model");
+        assert!(before
+            .validation
+            .issues
+            .iter()
+            .any(|issue| issue.code == "schema.drift"));
+
+        let validation = repair_schema_for_repo(&repo).expect("repair schema");
+
+        assert!(!validation
+            .issues
+            .iter()
+            .any(|issue| issue.code == "schema.drift"));
 
         cleanup(root);
     }
