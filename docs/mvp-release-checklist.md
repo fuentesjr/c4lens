@@ -80,6 +80,10 @@ sharing an internal build.
 
 ## Manual Smoke
 
+Use the [MVP first-run walkthrough](mvp-first-run-walkthrough.md) for a concise
+end-to-end validation path, and record formal candidate results with the
+[MVP manual QA template](mvp-manual-qa-template.md).
+
 To create a disposable repository for manual MVP checks:
 
 ```sh

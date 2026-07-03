@@ -63,6 +63,9 @@ Check repository readiness before opening it in the app or sharing it:
 c4lens doctor --repo /path/to/repo
 ```
 
+For the full command-line flow from repository initialization through generated
+overlay drift checking, see the [CLI quickstart](docs/cli-quickstart.md).
+
 ## Quality Gates
 
 Run the full local check before committing:
@@ -122,8 +125,11 @@ universal macOS build, and artifact verification. It must run on macOS.
 - [Project tracker](PROJECT_TRACKER.md)
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/roadmap.md)
+- [CLI quickstart](docs/cli-quickstart.md)
 - [Packaging](docs/packaging.md)
 - [MVP release checklist](docs/mvp-release-checklist.md)
+- [MVP first-run walkthrough](docs/mvp-first-run-walkthrough.md)
+- [MVP manual QA template](docs/mvp-manual-qa-template.md)
 - [MVP release notes](docs/mvp-release-notes.md)
 - [Desktop design](docs/design/c4lens-desktop-design.md)
 - [Desktop implementation spec](docs/spec/c4lens-desktop-spec.md)

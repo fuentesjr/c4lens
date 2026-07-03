@@ -18,26 +18,26 @@ file tracks execution state across task batches.
 
 ## In Flight
 
-Current batch:
+Current batch: none.
 
-- Add `c4lens doctor` for non-mutating repository health checks.
-- Add integration tests for ready, uninitialized, invalid, and schema-drift
-  repos.
-- Add `doctor` to `npm run smoke:mvp`.
-- Add `PROJECT_TRACKER.md` and update docs/docs-contract checks to use it going
-  forward.
+Last completed batch:
+
+- Ran `npm run smoke:release` against the current branch.
+- Added `docs/mvp-manual-qa-template.md` for release candidate result capture.
+- Added `docs/mvp-first-run-walkthrough.md` for reviewer first-run validation.
+- Added `docs/cli-quickstart.md` for the end-to-end CLI setup and generation
+  flow.
 
 Verification status:
 
-- `cargo test -p c4lens-cli --test doctor`: passed.
 - `npm run check:mvp-docs`: passed.
-- `npm run smoke:mvp`: passed.
-- `npm run check:all`: passed.
+- `npm run smoke:release`: passed.
 
 ## Recent Batches
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `3d3376f` | CLI repo doctor and project tracker | Added `c4lens doctor`, doctor integration coverage, MVP smoke coverage, and the project tracker. |
 | `516a883` | CLI onboarding commands | Added `c4lens init`, `c4lens schema`, CLI tests, MVP smoke coverage, and onboarding docs. |
 | `132fbdd` | MVP release artifacts | Added CLI/app version visibility and macOS `release-manifest.json` generation/verification. |
 | `f4440ac` | MVP release readiness checks | Added MVP release notes, release metadata checks, and reusable demo repo fixture. |
@@ -68,13 +68,11 @@ Useful targeted checks:
 
 Pick from this list when the user asks for the next MVP task batch:
 
-- Run and fix `npm run smoke:release` against the current branch.
-- Add a manual QA result log/template for the MVP release checklist.
-- Add a screenshot or short walkthrough doc for first-run MVP validation.
-- Add a CLI quickstart section that shows `init`, `doctor`, `scan`,
-  `generate --write`, and `validate` as one flow.
 - Add packaged artifact retention/version notes to release docs if CI output
   proves ambiguous.
+- Resolve issues found by the first internal manual QA pass.
+- Decide whether the internal MVP candidate needs a signed/notarized follow-up
+  before wider sharing.
 
 ## Known Non-Blocking MVP Limits
 

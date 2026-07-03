@@ -64,6 +64,9 @@ listed here are planned or deferred capabilities, not regressions.
 | macOS release manifest | Implemented | `npm run package:verify` writes and validates `release-manifest.json` with artifact paths, DMG size, and DMG SHA-256. |
 | MVP demo repository fixture | Implemented | `npm run demo:mvp-repo` creates the mixed-language repo fixture used by manual smoke and `npm run smoke:mvp`. |
 | MVP documentation contract check | Implemented | `npm run check:mvp-docs` keeps release-facing docs aligned with the MVP export and quality-gate contract. |
+| CLI quickstart | Implemented | `docs/cli-quickstart.md` documents the first-run CLI path from `init` and `doctor` through scan, generation, drift check, and validation. |
+| MVP first-run walkthrough | Implemented | `docs/mvp-first-run-walkthrough.md` gives reviewers a concise CLI plus desktop validation path against the demo repository. |
+| MVP manual QA template | Implemented | `docs/mvp-manual-qa-template.md` captures candidate metadata, automated gate results, and manual release smoke outcomes. |
 | Internal MVP release notes | Implemented | `docs/mvp-release-notes.md` summarizes shipped scope, verification, artifact names, known limits, and upgrade notes for the internal candidate. |
 | Internal MVP release checklist | Implemented | `docs/mvp-release-checklist.md` captures the automated gate, artifact paths, manual smoke, and known non-blocking MVP limits. |
 
