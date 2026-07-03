@@ -168,6 +168,7 @@ export type ExportViewParams = {
   scope: { level: string; slug?: string | null };
   svg?: string;
   pngBase64?: string;
+  pdfBase64?: string;
 };
 
 export async function exportView(params: ExportViewParams): Promise<{ savedPath: string }> {

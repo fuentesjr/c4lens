@@ -85,6 +85,77 @@ export async function svgToPngBase64(serialized: SerializedSvg): Promise<string>
   }
 }
 
+export function serializeViewToPdfBase64(nodes: C4FlowNode[], edges: Edge[], title: string): string {
+  const bounds =
+    nodes.length === 0
+      ? { minX: 0, minY: 0, maxX: DEFAULT_WIDTH - EXPORT_PADDING * 2, maxY: DEFAULT_HEIGHT - EXPORT_PADDING * 2 }
+      : graphBounds(nodes);
+  const width = Math.ceil(bounds.maxX - bounds.minX + EXPORT_PADDING * 2);
+  const height = Math.ceil(bounds.maxY - bounds.minY + EXPORT_PADDING * 2);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const translateX = (x: number) => x - bounds.minX + EXPORT_PADDING;
+  const translateY = (y: number) => y - bounds.minY + EXPORT_PADDING;
+  const pageY = (y: number) => height - y;
+  const commands: string[] = [
+    "q",
+    "0.984 0.988 0.992 rg",
+    `0 0 ${pdfNumber(width)} ${pdfNumber(height)} re f`,
+    "Q",
+  ];
+
+  commands.push(textCommand(title, 18, EXPORT_PADDING, pageY(24), "0.122 0.161 0.200"));
+
+  edges.forEach((edge) => {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) {
+      return;
+    }
+    const sourceX = translateX(source.position.x + (source.width ?? 0) / 2);
+    const sourceY = pageY(translateY(source.position.y + (source.height ?? 0) / 2));
+    const targetX = translateX(target.position.x + (target.width ?? 0) / 2);
+    const targetY = pageY(translateY(target.position.y + (target.height ?? 0) / 2));
+    commands.push(
+      "q",
+      "0.322 0.380 0.439 RG",
+      "1.5 w",
+      `${pdfNumber(sourceX)} ${pdfNumber(sourceY)} m ${pdfNumber(targetX)} ${pdfNumber(targetY)} l S`,
+      "Q",
+    );
+    if (typeof edge.label === "string" && edge.label) {
+      const labelX = (sourceX + targetX) / 2;
+      const labelY = (sourceY + targetY) / 2 + 8;
+      commands.push(textCommand(edge.label, 12, labelX, labelY, "0.267 0.318 0.373", "center"));
+    }
+  });
+
+  nodes.forEach((node) => {
+    const x = translateX(node.position.x);
+    const y = translateY(node.position.y);
+    const nodeWidth = node.width ?? 220;
+    const nodeHeight = node.height ?? 96;
+    const pdfY = height - y - nodeHeight;
+    const accent = node.data.generated ? "0.561 0.247 0.443" : "0.086 0.490 0.498";
+    commands.push(
+      "q",
+      "1 1 1 rg",
+      "0.812 0.839 0.875 RG",
+      "1 w",
+      `${pdfNumber(x)} ${pdfNumber(pdfY)} ${pdfNumber(nodeWidth)} ${pdfNumber(nodeHeight)} re B`,
+      `${accent} rg`,
+      `${pdfNumber(x)} ${pdfNumber(pdfY)} 5 ${pdfNumber(nodeHeight)} re f`,
+      "Q",
+      textCommand(truncate(node.data.label, 28), 14, x + 18, pageY(y + 28), "0.122 0.161 0.200"),
+      textCommand(node.data.subtitle, 11, x + 18, pageY(y + 48), "0.408 0.455 0.514"),
+    );
+    if (node.data.tech) {
+      commands.push(textCommand(truncate(node.data.tech, 30), 12, x + 18, pageY(y + nodeHeight - 18), "0.322 0.380 0.439"));
+    }
+  });
+
+  return bytesToBase64(pdfDocumentBytes(width, height, commands.join("\n")));
+}
+
 function graphBounds(nodes: C4FlowNode[]) {
   return nodes.reduce(
     (bounds, node) => ({
@@ -100,6 +171,62 @@ function graphBounds(nodes: C4FlowNode[]) {
       maxY: Number.NEGATIVE_INFINITY,
     },
   );
+}
+
+function pdfDocumentBytes(width: number, height: number, content: string): Uint8Array {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfNumber(width)} ${pdfNumber(height)}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${offset.toString().padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+}
+
+function textCommand(
+  value: string,
+  size: number,
+  x: number,
+  y: number,
+  color: string,
+  alignment: "left" | "center" = "left",
+): string {
+  const text = pdfText(value);
+  const adjustedX = alignment === "center" ? x - (text.length * size * 0.28) : x;
+  return `BT /F1 ${size} Tf ${color} rg ${pdfNumber(adjustedX)} ${pdfNumber(y)} Td (${escapePdfText(text)}) Tj ET`;
+}
+
+function pdfNumber(value: number): string {
+  return Number.isInteger(value) ? value.toString() : value.toFixed(2);
+}
+
+function pdfText(value: string): string {
+  return value.replace(/[^\x20-\x7e]/g, "?");
+}
+
+function escapePdfText(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function truncate(value: string, maxLength: number): string {

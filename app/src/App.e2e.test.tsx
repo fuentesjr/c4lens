@@ -1570,6 +1570,36 @@ describe("App scan behavior", () => {
     cleanup();
   });
 
+  it("exports the current view as PDF", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.exportView.mockResolvedValueOnce({ savedPath: "/tmp/current-view.pdf" });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const pdfButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "PDF",
+    );
+    expect(pdfButton).not.toBeNull();
+
+    await act(async () => {
+      pdfButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.exportView).toHaveBeenCalledWith({
+      format: "pdf",
+      scope: { level: "context" },
+      pdfBase64: expect.any(String),
+    });
+    const payload = ipcMocks.exportView.mock.calls[0]?.[0] as { pdfBase64?: string };
+    expect(atob(payload.pdfBase64 ?? "").startsWith("%PDF-1.4")).toBe(true);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Exported PDF to /tmp/current-view.pdf");
+
+    cleanup();
+  });
+
   it("exports the current view as PNG", async () => {
     const restorePngApis = stubPngExportBrowserApis();
     ipcMocks.isTauriDesktop.mockReturnValue(true);

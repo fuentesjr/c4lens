@@ -21,7 +21,8 @@ npm run check:all
 ```
 
 This is the same command used by CI. It runs Rust formatting, Clippy with
-warnings denied, Rust tests, TypeScript checking, Vitest, and whitespace checks.
+warnings denied, Rust tests, the MVP documentation contract check, TypeScript
+checking, Vitest, and whitespace checks.
 
 ## Branch And Scope Hygiene
 

@@ -8,7 +8,7 @@ listed here are planned or deferred capabilities, not regressions.
 | Item | Status | Notes |
 | --- | --- | --- |
 | Search | Implemented | Topbar search queries elements, indexed files, and indexed symbols with deterministic, bounded results. |
-| SVG/PNG export | Implemented | The renderer serializes the current view and the Tauri backend saves SVG or PNG through a native save dialog. |
+| SVG/PDF/PNG export | Implemented | The renderer serializes the current view and the Tauri backend saves SVG, PDF, or PNG through a native save dialog. |
 | Layout caching | Implemented | ELK output is cached by source SHA, view scope, and stable layout input. Model/source/scope/input changes produce a new cache key. |
 | Generation diff/review UX | Implemented | The app shows a diff summary, change list, generated YAML preview, and accept-all apply action. |
 | Generated provenance badges | Implemented | Generated elements and relationships are visibly marked in the canvas and detail panel. |
@@ -50,10 +50,12 @@ listed here are planned or deferred capabilities, not regressions.
 | Multi-language generation regression coverage | Implemented | CLI generation tests cover import-derived relationships for TypeScript, Python, Ruby, Go, and Rust. |
 | Multi-language MVP smoke fixture | Implemented | `npm run smoke:mvp` now scans a mixed-language repo and checks generated import relationships across the MVP parser set. |
 | PNG export workflow coverage | Implemented | Renderer E2E coverage now exercises PNG export payload generation and desktop IPC handoff. |
+| PDF export workflow coverage | Implemented | Renderer E2E coverage now exercises PDF export payload generation and desktop IPC handoff. |
 | macOS artifact verification | Implemented | `npm run package:verify` validates the unsigned app bundle, DMG, plist, executable, and universal architectures. |
 | Release smoke command | Implemented | `npm run smoke:release` runs the quality gate, MVP smoke, unsigned macOS build, and artifact verification on macOS. |
 | macOS packaging CI | Implemented | CI builds and uploads unsigned universal macOS artifacts on pushes to `main` and manual workflow dispatches. |
 | Packaged-app release metadata smoke | Implemented | `npm run package:verify` now checks bundle name, identifier, version metadata, universal executable architecture, and DMG checksum validity. |
+| MVP documentation contract check | Implemented | `npm run check:mvp-docs` keeps release-facing docs aligned with the MVP export and quality-gate contract. |
 | Internal MVP release checklist | Implemented | `docs/mvp-release-checklist.md` captures the automated gate, artifact paths, manual smoke, and known non-blocking MVP limits. |
 
 ## Later Backlog

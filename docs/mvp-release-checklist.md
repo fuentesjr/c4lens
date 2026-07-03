@@ -33,6 +33,7 @@ The quality gate includes:
 - Rust format, Clippy, and test suite.
 - Renderer typecheck and test suite.
 - Tauri capability and production CSP checks.
+- MVP documentation contract check.
 - Git whitespace checks.
 
 The MVP smoke covers:
@@ -41,7 +42,7 @@ The MVP smoke covers:
 - Multi-language symbol/import indexing and generated import relationships.
 - Writer contention for scan and generated overlay writes.
 - Renderer workflow E2E tests, including search, validation, generation,
-  jump-to-code, SVG export, and PNG export.
+  jump-to-code, SVG export, PDF export, and PNG export.
 
 The package verifier checks:
 
@@ -86,7 +87,7 @@ supported macOS machine and exercise these workflows:
 - Select a generated element and confirm provenance is visible.
 - Use global search with keyboard navigation to open an element and a file.
 - Jump to code from the detail panel.
-- Export SVG and PNG from the current view.
+- Export SVG, PDF, and PNG from the current view.
 - Toggle light and dark themes.
 - Resize to the configured minimum window size and confirm the canvas and detail
   panel remain usable.

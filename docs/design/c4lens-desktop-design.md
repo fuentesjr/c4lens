@@ -194,7 +194,7 @@ This keeps the important guarantees — diffable YAML, PR-reviewable changes, fi
 - **Layout** (`elkjs`): client-side ELK, deterministic per input, cached by source, scope, layout options, and measured node dimensions.
 - **Navigator** (xyflow): pan/zoom/minimap, rich C4 cards, drill-down, dependency highlighting.
 - **Detail panel**: element metadata, relationships, **and the desktop additions** — inline source preview and an "open in editor" affordance.
-- **Export**: xyflow → SVG/PNG, written to disk via a native save dialog (`tauri-plugin-dialog`/`-fs`) instead of a browser download.
+- **Export**: xyflow → SVG/PDF/PNG, written to disk via a native save dialog (`tauri-plugin-dialog`/`-fs`) instead of a browser download.
 
 ### IPC contract (commands ↔ events)
 
@@ -209,7 +209,7 @@ COMMANDS (renderer → core, via invoke)
   get_element_code(slug) -> CodeRef        # { path, range, snippet } from the index
   open_in_editor(path, line?) -> ()        # via tauri-plugin-opener / shell
   search(query) -> SearchResults
-  export_view(format, scope) -> SavedPath  # svg|png, via save dialog
+  export_view(format, scope) -> SavedPath  # svg|pdf|png, via save dialog
 
 EVENTS (core → renderer, via emit/listen)
   model-changed        # repoId + validation/source hash; renderer refetches
@@ -310,7 +310,7 @@ Edit `c4/model.yml` with the schema wired into the editor for autocomplete and i
 
 - **Phase 0 — Skeleton.** Tauri 2 + React + Vite + xyflow; open a folder; render one hard-coded sample model in the navigator to prove the render path inside the webview. Verify canvas behavior in WKWebView/WebView2.
 - **Phase 1 — Core + index.** YAML parse + `jsonschema` validation in the Rust core; `ViewDeriver` (relocated to the renderer) + the `Navigator/Show` view with drill-down, breadcrumb, detail panel, deep links; `notify` watch + live refresh; **SQLite code index** (files/symbols/imports) via tree-sitter + `ignore`; **jump-to-code** (open in editor + inline preview); `c4lens validate` CLI.
-- **Phase 2 — Generation + polish.** **Code→model generation** to `model.generated.yml` with overlay merge, provenance badges, and the review-diff UX (`c4lens generate`); dependency highlighting + focus mode; search/jump-to; SVG/PNG export via save dialog; light/dark; layout caching; packaging (`.dmg`/`.msi`/`.AppImage`) + signed auto-update.
+- **Phase 2 — Generation + polish.** **Code→model generation** to `model.generated.yml` with overlay merge, provenance badges, and the review-diff UX (`c4lens generate`); dependency highlighting + focus mode; search/jump-to; SVG/PDF/PNG export via save dialog; light/dark; layout caching; packaging (`.dmg`/`.msi`/`.AppImage`) + signed auto-update.
 - **Phase 3+ — Roadmap.** **Rendered L4 Code-level views** (xyflow + ELK over indexed symbols — cheap, since the data exists); LSP-backed relationship inference (precise call/usage edges); generated-slug rename/move detection (preserve slugs when files move); multi-repo workspace; **local MCP server** the app exposes to agents; curated named views; multi-file models; tags/perspectives; flows; Mermaid/Structurizr export; `c4://` deep links.
 
 ---

@@ -32,7 +32,7 @@ MVP is Phases 0-2:
   index, jump-to-code, inline source preview, `c4lens validate`.
 - Phase 2: code-to-model generation into `c4/model.generated.yml`, overlay
   merge, provenance badges, review-diff UX, search, dependency highlighting,
-  SVG/PNG export, layout caching, macOS packaging, `c4lens generate`.
+  SVG/PDF/PNG export, layout caching, macOS packaging, `c4lens generate`.
 
 The target operating system for MVP is macOS only. Produce universal arm64 +
 x86_64 bundles. Windows/Linux remain architectural constraints but are not
@@ -1339,16 +1339,17 @@ Search semantics:
 
 ```ts
 export_view(params: {
-  format: "svg" | "png";
+  format: "svg" | "pdf" | "png";
   scope: ViewScope;
   svg?: string;
+  pdfBase64?: string;
   pngBase64?: string;
 }): Promise<{ savedPath: string }>
 ```
 
-Renderer supplies `svg` for SVG export and `pngBase64` for PNG export. Core
-opens a native save dialog and writes the selected file. Phase 2 is complete
-when both SVG and PNG save from the app.
+Renderer supplies `svg` for SVG export, `pdfBase64` for PDF export, and
+`pngBase64` for PNG export. Core opens a native save dialog and writes the
+selected file. Phase 2 is complete when SVG, PDF, and PNG save from the app.
 
 ### 12.3 Events
 
@@ -2131,7 +2132,7 @@ install artifacts.
 - Search returns deterministic element and indexed-code results with bounded,
   literal query semantics.
 - Dependency highlighting and focus mode work on all derived views.
-- SVG and PNG export write through native save dialog.
+- SVG, PDF, and PNG export write through native save dialog.
 - Layout cache avoids recomputing unchanged scopes and invalidates when measured
   node dimensions or layout options change.
 - macOS universal app artifact is produced.
@@ -2175,7 +2176,7 @@ End-to-end smoke:
 - apply overlay;
 - apply overlay while another GUI/CLI writer holds the repo lock;
 - jump to code;
-- export SVG/PNG.
+- export SVG/PDF/PNG.
 
 Manual visual QA:
 

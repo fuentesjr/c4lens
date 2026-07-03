@@ -61,6 +61,7 @@ This runs:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 - `npm run check:tauri-security`
+- `npm run check:mvp-docs`
 - `npm run check`
 - `npm run test`
 - `git diff --check`
@@ -72,6 +73,7 @@ For targeted checks:
 
 ```sh
 npm run check
+npm run check:mvp-docs
 npm run check:tauri-security
 npm run test
 npm run smoke:mvp

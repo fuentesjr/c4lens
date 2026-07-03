@@ -140,6 +140,7 @@ pub struct OpenInEditorParams {
 pub enum ExportFormat {
     Svg,
     Png,
+    Pdf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +157,7 @@ pub struct ExportViewParams {
     pub scope: ExportViewScope,
     pub svg: Option<String>,
     pub png_base64: Option<String>,
+    pub pdf_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1061,22 +1063,41 @@ fn export_payload_bytes(params: &ExportViewParams) -> Result<Vec<u8>, CommandErr
             .map(|svg| svg.as_bytes().to_vec())
             .ok_or_else(|| CommandError::new("export.failed", "SVG export payload is missing.")),
         ExportFormat::Png => {
-            let encoded = params
-                .png_base64
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    CommandError::new("export.failed", "PNG export payload is missing.")
-                })?;
-            general_purpose::STANDARD.decode(encoded).map_err(|error| {
-                CommandError::with_details(
-                    "export.failed",
-                    "PNG export payload is not valid base64.",
-                    serde_json::json!({ "error": error.to_string() }),
-                )
-            })
+            decode_base64_export_payload(params.png_base64.as_deref(), "PNG", None)
+        }
+        ExportFormat::Pdf => {
+            decode_base64_export_payload(params.pdf_base64.as_deref(), "PDF", Some(b"%PDF-"))
         }
     }
+}
+
+fn decode_base64_export_payload(
+    encoded: Option<&str>,
+    format: &str,
+    required_prefix: Option<&[u8]>,
+) -> Result<Vec<u8>, CommandError> {
+    let encoded = encoded.filter(|value| !value.is_empty()).ok_or_else(|| {
+        CommandError::new(
+            "export.failed",
+            format!("{format} export payload is missing."),
+        )
+    })?;
+    let bytes = general_purpose::STANDARD.decode(encoded).map_err(|error| {
+        CommandError::with_details(
+            "export.failed",
+            format!("{format} export payload is not valid base64."),
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    if let Some(prefix) = required_prefix {
+        if !bytes.starts_with(prefix) {
+            return Err(CommandError::new(
+                "export.failed",
+                format!("{format} export payload is not a valid {format} document."),
+            ));
+        }
+    }
+    Ok(bytes)
 }
 
 fn pick_export_path(repo: &RepoHandle, params: &ExportViewParams) -> Option<PathBuf> {
@@ -1084,6 +1105,7 @@ fn pick_export_path(repo: &RepoHandle, params: &ExportViewParams) -> Option<Path
     let title = match params.format {
         ExportFormat::Svg => "Export SVG view",
         ExportFormat::Png => "Export PNG view",
+        ExportFormat::Pdf => "Export PDF view",
     };
     let mut dialog = FileDialog::new()
         .set_title(title)
@@ -1091,6 +1113,7 @@ fn pick_export_path(repo: &RepoHandle, params: &ExportViewParams) -> Option<Path
     dialog = match params.format {
         ExportFormat::Svg => dialog.add_filter("SVG", &["svg"]),
         ExportFormat::Png => dialog.add_filter("PNG", &["png"]),
+        ExportFormat::Pdf => dialog.add_filter("PDF", &["pdf"]),
     };
     let selected = dialog.save_file()?;
     if selected.extension().is_some() {
@@ -1133,6 +1156,7 @@ fn export_extension(format: &ExportFormat) -> &'static str {
     match format {
         ExportFormat::Svg => "svg",
         ExportFormat::Png => "png",
+        ExportFormat::Pdf => "pdf",
     }
 }
 
@@ -1506,6 +1530,7 @@ systems:
             },
             svg: Some("<svg><text>c4lens</text></svg>".to_string()),
             png_base64: None,
+            pdf_base64: None,
         };
 
         let result =
@@ -1534,12 +1559,101 @@ systems:
             },
             svg: None,
             png_base64: Some("AQIDBA==".to_string()),
+            pdf_base64: None,
         };
 
         export_view_for_repo_with_picker(&repo, &params, |_, _| Some(output_path.clone()))
             .expect("export png");
 
         assert_eq!(fs::read(&output_path).expect("read png"), [1, 2, 3, 4]);
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn export_view_for_repo_decodes_pdf_payload() {
+        let root = fresh_test_dir("export-view-pdf");
+        let output_path = root.join("view.pdf");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = ExportViewParams {
+            format: ExportFormat::Pdf,
+            scope: ExportViewScope {
+                level: "context".to_string(),
+                slug: None,
+            },
+            svg: None,
+            png_base64: None,
+            pdf_base64: Some("JVBERi0xLjQKJSB0ZXN0Cg==".to_string()),
+        };
+
+        export_view_for_repo_with_picker(&repo, &params, |_, _| Some(output_path.clone()))
+            .expect("export pdf");
+
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("read pdf"),
+            "%PDF-1.4\n% test\n"
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn export_view_for_repo_rejects_missing_pdf_payload_before_picking_path() {
+        let root = fresh_test_dir("export-view-missing-pdf");
+        let output_path = root.join("view.pdf");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = ExportViewParams {
+            format: ExportFormat::Pdf,
+            scope: ExportViewScope {
+                level: "context".to_string(),
+                slug: None,
+            },
+            svg: None,
+            png_base64: None,
+            pdf_base64: None,
+        };
+        let mut picker_called = false;
+
+        let error = export_view_for_repo_with_picker(&repo, &params, |_, _| {
+            picker_called = true;
+            Some(output_path.clone())
+        })
+        .expect_err("missing pdf payload should fail");
+
+        assert!(!picker_called);
+        assert_eq!(error.code, "export.failed");
+        assert_eq!(error.message, "PDF export payload is missing.");
+        assert!(!output_path.exists());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn export_view_for_repo_rejects_invalid_pdf_payload_before_writing() {
+        let root = fresh_test_dir("export-view-invalid-pdf");
+        let output_path = root.join("view.pdf");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = ExportViewParams {
+            format: ExportFormat::Pdf,
+            scope: ExportViewScope {
+                level: "context".to_string(),
+                slug: None,
+            },
+            svg: None,
+            png_base64: None,
+            pdf_base64: Some("bm90IGEgcGRmCg==".to_string()),
+        };
+
+        let error =
+            export_view_for_repo_with_picker(&repo, &params, |_, _| Some(output_path.clone()))
+                .expect_err("non-pdf payload should fail");
+
+        assert_eq!(error.code, "export.failed");
+        assert_eq!(
+            error.message,
+            "PDF export payload is not a valid PDF document."
+        );
+        assert!(!output_path.exists());
 
         cleanup(root);
     }

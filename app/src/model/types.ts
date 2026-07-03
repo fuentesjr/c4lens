@@ -175,7 +175,7 @@ export interface SourceRange {
 
 export type ElementSearchMatch = "slug" | "name" | "description" | "tech";
 export type FileSearchMatch = "path";
-export type ViewExportFormat = "svg" | "png";
+export type ViewExportFormat = "svg" | "png" | "pdf";
 
 export interface ElementSearchResult {
   slug: Slug;

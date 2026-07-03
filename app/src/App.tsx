@@ -49,7 +49,7 @@ import {
   searchRepository,
 } from "./ipc/client";
 import type { OpenRepoResult } from "./ipc/client";
-import { serializeViewToSvg, svgToPngBase64 } from "./export/viewExport";
+import { serializeViewToPdfBase64, serializeViewToSvg, svgToPngBase64 } from "./export/viewExport";
 import { useGenerationCandidate } from "./hooks/useGenerationCandidate";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
@@ -786,7 +786,9 @@ export function App() {
         const params =
           format === "svg"
             ? { format, scope, svg: serialized.svg }
-            : { format, scope, pngBase64: await svgToPngBase64(serialized) };
+            : format === "png"
+              ? { format, scope, pngBase64: await svgToPngBase64(serialized) }
+              : { format, scope, pdfBase64: serializeViewToPdfBase64(nodes, edges, model.model.name) };
         const result = await exportView(params);
         setStatus(`Exported ${format.toUpperCase()} to ${result.savedPath}`);
       } catch (error) {
@@ -861,6 +863,14 @@ export function App() {
             >
               <Download size={17} aria-hidden="true" />
               <span>{isExporting === "svg" ? "Saving" : "SVG"}</span>
+            </button>
+            <button
+              className="icon-button compact"
+              onClick={() => void runExport("pdf")}
+              disabled={Boolean(isExporting) || nodes.length === 0}
+              title="Export PDF"
+            >
+              <span>{isExporting === "pdf" ? "Saving" : "PDF"}</span>
             </button>
             <button
               className="icon-button compact"
