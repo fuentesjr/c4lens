@@ -8,6 +8,7 @@
     "build": "npm --workspace app run build",
     "check:all": "bash scripts/check.sh",
     "check": "npm --workspace app run check",
+    "smoke:mvp": "bash scripts/smoke_mvp.sh",
     "test": "npm --workspace app run test",
     "preview": "npm --workspace app run preview",
     "tauri": "npm --workspace app run tauri",

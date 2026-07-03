@@ -60,7 +60,15 @@ export async function openRepositoryFromDialog(): Promise<OpenRepoResult | null>
     return null;
   }
 
-  const repo = await invoke<RepoHandle>("open_repo", { path: selected });
+  return await openRepositoryFromPath(selected);
+}
+
+export async function openRepositoryFromPath(path: string): Promise<OpenRepoResult> {
+  if (!isTauriDesktop()) {
+    throw new Error("Repository opening is available in the Tauri desktop shell");
+  }
+
+  const repo = await invoke<RepoHandle>("open_repo", { path });
   let model: EffectiveModel | null = null;
   try {
     model = await invoke<EffectiveModel>("get_model");

@@ -60,6 +60,12 @@ const ipcMocks = vi.hoisted(() => {
     openRepositoryFromDialog: vi.fn<
       () => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null } | null>
     >(async () => null),
+    openRepositoryFromPath: vi.fn<
+      (path: string) => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null }>
+    >(async () => ({
+      repo: { id: "sample", rootPath: "", name: "Sample" },
+      model: null,
+    })),
     scanCodebase: vi.fn<() => Promise<ScanSummary>>(async () => scanSummaryFor()),
     searchRepository: vi.fn<(params: { query: string; limit?: number }) => Promise<SearchResults>>(async () => ({
       query: "",
@@ -80,6 +86,7 @@ vi.mock("./ipc/client", () => ({
   listenToModelEvents: ipcMocks.listenToModelEvents,
   openInEditor: ipcMocks.openInEditor,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
+  openRepositoryFromPath: ipcMocks.openRepositoryFromPath,
   scanCodebase: ipcMocks.scanCodebase,
   searchRepository: ipcMocks.searchRepository,
 }));
@@ -210,6 +217,8 @@ function mountApp(): { container: HTMLElement; cleanup: () => void } {
 function resetDomAndRoute() {
   document.body.innerHTML = "";
   window.location.hash = "";
+  window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
   ipcMocks.fetchActiveModel.mockReset();
   ipcMocks.fetchActiveModel.mockResolvedValue(null);
   ipcMocks.applyGenerated.mockReset();
@@ -227,6 +236,11 @@ function resetDomAndRoute() {
   ipcMocks.listenToModelEvents.mockClear();
   ipcMocks.openRepositoryFromDialog.mockReset();
   ipcMocks.openRepositoryFromDialog.mockResolvedValue(null);
+  ipcMocks.openRepositoryFromPath.mockReset();
+  ipcMocks.openRepositoryFromPath.mockResolvedValue({
+    repo: sampleModel.repo,
+    model: sampleModel,
+  });
   ipcMocks.scanCodebase.mockReset();
   ipcMocks.scanCodebase.mockResolvedValue(scanSummaryFor());
   ipcMocks.searchRepository.mockReset();
@@ -336,6 +350,28 @@ describe("App drill-down renderer behavior", () => {
 
     const paymentsNode = getCanvasNode(container, "Payments");
     expect(paymentsNode?.className).toContain("dependency-muted");
+
+    cleanup();
+  });
+
+  it("persists the selected color theme", async () => {
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const themeControl = container.querySelector('[aria-label="Color theme"]');
+    expect(themeControl).not.toBeNull();
+    const darkButton = Array.from(themeControl!.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Dark",
+    );
+    expect(darkButton).not.toBeNull();
+
+    act(() => {
+      darkButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(window.localStorage.getItem("c4lens.theme")).toBe("dark");
 
     cleanup();
   });
@@ -894,6 +930,62 @@ describe("App model event behavior", () => {
 
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Recovered Architecture");
     expect(container.querySelector(".statusbar")?.textContent).toContain("Model updated");
+
+    cleanup();
+  });
+
+  it("remembers the selected repo path after opening a repo", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    const repo = {
+      id: "remembered-repo",
+      rootPath: "/tmp/remembered-repo",
+      name: "Remembered Repo",
+    };
+    ipcMocks.openRepositoryFromDialog.mockResolvedValueOnce({
+      repo,
+      model: effectiveModelWithName("Remembered Architecture", repo.id),
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const openButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Open Folder",
+    );
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      openButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(window.localStorage.getItem("c4lens.lastRepoPath")).toBe("/tmp/remembered-repo");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Remembered Architecture");
+
+    cleanup();
+  });
+
+  it("reopens the last repo path on startup when no active repo is loaded", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    window.localStorage.setItem("c4lens.lastRepoPath", "/tmp/last-repo");
+    const repo = {
+      id: "last-repo",
+      rootPath: "/tmp/last-repo",
+      name: "Last Repo",
+    };
+    ipcMocks.openRepositoryFromPath.mockResolvedValueOnce({
+      repo,
+      model: effectiveModelWithName("Last Repo Architecture", repo.id),
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(ipcMocks.openRepositoryFromPath).toHaveBeenCalledWith("/tmp/last-repo");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Last Repo Architecture");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Reopened Last Repo");
 
     cleanup();
   });

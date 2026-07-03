@@ -32,10 +32,12 @@ import {
   isTauriDesktop,
   listenToModelEvents,
   openRepositoryFromDialog,
+  openRepositoryFromPath,
   openInEditor,
   scanCodebase,
   searchRepository,
 } from "./ipc/client";
+import type { OpenRepoResult } from "./ipc/client";
 import { serializeViewToSvg, svgToPngBase64 } from "./export/viewExport";
 import { useGenerationCandidate } from "./hooks/useGenerationCandidate";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
@@ -89,6 +91,10 @@ const emptySearchResults: SearchResults = {
 };
 
 type FocusMode = "all" | "connected";
+type ThemeMode = "light" | "dark";
+
+const LAST_REPO_PATH_KEY = "c4lens.lastRepoPath";
+const THEME_KEY = "c4lens.theme";
 
 type DependencyState = {
   activeSlug: string | null;
@@ -114,6 +120,7 @@ export function App() {
   const [isExporting, setIsExporting] = useState<ViewExportFormat | null>(null);
   const [hoveredSlug, setHoveredSlug] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState<FocusMode>("all");
+  const [theme, setTheme] = useState<ThemeMode>(() => initialThemeMode());
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
@@ -180,6 +187,46 @@ export function App() {
     activeRepoIdRef.current = repoId;
     setActiveRepoId(repoId);
   }, []);
+
+  const rememberLastRepo = useCallback((result: OpenRepoResult) => {
+    if (isTauriDesktop() && result.repo.rootPath) {
+      window.localStorage.setItem(LAST_REPO_PATH_KEY, result.repo.rootPath);
+    }
+  }, []);
+
+  const applyOpenRepoResult = useCallback(
+    (result: OpenRepoResult, successStatus?: string) => {
+      updateActiveRepoId(result.repo.id);
+      setIndexRevision(null);
+      clearGenerationCandidate();
+      rememberLastRepo(result);
+      if (result.model) {
+        const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
+        setModel(result.model);
+        setScope(nextRoute.scope);
+        setSelectedSlug(nextRoute.selectedSlug);
+        setRouteIssue(nextRoute.issue);
+        setValidationOverride(null);
+        setStatus(successStatus ?? `Opened ${result.repo.name}`);
+      } else {
+        setValidationOverride({
+          ok: false,
+          issues: [
+            {
+              severity: "error",
+              stage: "parse",
+              code: "model.load_failed",
+              message: `Unable to load ${result.repo.name}. Waiting for a valid model file.`,
+            },
+          ],
+        });
+        setSelectedSlug(null);
+        setRouteIssue(null);
+        setStatus(`Watching ${result.repo.name}`);
+      }
+    },
+    [clearGenerationCandidate, rememberLastRepo, updateActiveRepoId],
+  );
 
   const navigateTo = useCallback(
     (nextScope: ViewScope, nextSelectedSlug: string | null = null) => {
@@ -386,21 +433,50 @@ export function App() {
   }, [activeRepoId, indexRevision, model.sourceSha, selectedElement?.code, selectedElement?.slug]);
 
   useEffect(() => {
-    fetchActiveModel().then((activeModel) => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchActiveModel().then(async (activeModel) => {
+      if (cancelled) {
+        return;
+      }
+
       if (activeModel) {
-        const nextRoute = resolveHashRoute(currentHashRoute(), activeModel);
-        setModel(activeModel);
-        updateActiveRepoId(activeModel.repo.id);
-        setScope(nextRoute.scope);
-        setSelectedSlug(nextRoute.selectedSlug);
-        setRouteIssue(nextRoute.issue);
-        setValidationOverride(null);
-        setIndexRevision(null);
-        clearGenerationCandidate();
-        setStatus(`Opened ${activeModel.repo.name}`);
+        applyOpenRepoResult({ repo: activeModel.repo, model: activeModel }, `Opened ${activeModel.repo.name}`);
+        return;
+      }
+
+      if (!isTauriDesktop()) {
+        return;
+      }
+
+      const lastRepoPath = window.localStorage.getItem(LAST_REPO_PATH_KEY);
+      if (!lastRepoPath) {
+        return;
+      }
+
+      setStatus("Reopening last repository");
+      try {
+        const result = await openRepositoryFromPath(lastRepoPath);
+        if (!cancelled) {
+          applyOpenRepoResult(result, `Reopened ${result.repo.name}`);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          window.localStorage.removeItem(LAST_REPO_PATH_KEY);
+          setStatus(errorStatus(error, "Last repository unavailable"));
+        }
       }
     });
-  }, [clearGenerationCandidate, updateActiveRepoId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyOpenRepoResult]);
 
   useEffect(() => {
     let disposed = false;
@@ -475,39 +551,13 @@ export function App() {
         setStatus("Open canceled");
         return;
       }
-      updateActiveRepoId(result.repo.id);
-      setIndexRevision(null);
-      clearGenerationCandidate();
-      if (result.model) {
-        const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
-        setModel(result.model);
-        setScope(nextRoute.scope);
-        setSelectedSlug(nextRoute.selectedSlug);
-        setRouteIssue(nextRoute.issue);
-        setValidationOverride(null);
-        setStatus(`Opened ${result.repo.name}`);
-      } else {
-        setValidationOverride({
-          ok: false,
-          issues: [
-            {
-              severity: "error",
-              stage: "parse",
-              code: "model.load_failed",
-              message: `Unable to load ${result.repo.name}. Waiting for a valid model file.`,
-            },
-          ],
-        });
-        setSelectedSlug(null);
-        setRouteIssue(null);
-        setStatus(`Watching ${result.repo.name}`);
-      }
+      applyOpenRepoResult(result);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to open repository");
     } finally {
       setIsOpening(false);
     }
-  }, [clearGenerationCandidate, updateActiveRepoId]);
+  }, [applyOpenRepoResult]);
 
   const runScan = useCallback(async () => {
     if (!isTauriDesktop()) {
@@ -729,6 +779,14 @@ export function App() {
             Linked
           </button>
         </div>
+        <div className="segmented-control" aria-label="Color theme">
+          <button className={theme === "light" ? "active" : ""} type="button" onClick={() => setTheme("light")}>
+            Light
+          </button>
+          <button className={theme === "dark" ? "active" : ""} type="button" onClick={() => setTheme("dark")}>
+            Dark
+          </button>
+        </div>
       </nav>
 
       <main className="workspace">
@@ -797,6 +855,19 @@ export function App() {
 
 function currentHashRoute(): string {
   return typeof window === "undefined" ? "" : window.location.hash;
+}
+
+function initialThemeMode(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+
+  const stored = window.localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") {
+    return stored;
+  }
+
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function sourcePreviewForSelection(

@@ -52,9 +52,25 @@ describe("layoutWithElk", () => {
       sourceSha: sampleModel.sourceSha,
       scope: containerScope,
     });
+    const dimensionKey = layoutCacheKeyFor(contextView, {
+      sourceSha: sampleModel.sourceSha,
+      scope: contextScope,
+      nodeDimensions: {
+        customer: { width: 260, height: 120 },
+      },
+    });
+    const optionKey = layoutCacheKeyFor(contextView, {
+      sourceSha: sampleModel.sourceSha,
+      scope: contextScope,
+      layoutOptions: {
+        "elk.direction": "DOWN",
+      },
+    });
 
     expect(changedSourceKey).not.toBe(contextKey);
     expect(containerKey).not.toBe(contextKey);
+    expect(dimensionKey).not.toBe(contextKey);
+    expect(optionKey).not.toBe(contextKey);
   });
 });
 

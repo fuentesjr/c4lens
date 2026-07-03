@@ -70,7 +70,12 @@ For targeted checks:
 ```sh
 npm run check
 npm run test
+npm run smoke:mvp
 ```
+
+`npm run smoke:mvp` creates a temporary repository and exercises the CLI MVP
+path: validate, scan, generate preview, generated overlay write, and generated
+drift check.
 
 ## Reference Docs
 

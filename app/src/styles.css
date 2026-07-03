@@ -1,6 +1,7 @@
 :root {
   color: #1f2933;
   background: #f6f7f9;
+  color-scheme: light;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -798,6 +799,217 @@ input {
   color: #a15c00;
 }
 
+:root[data-theme="dark"] {
+  color: #dbe5ef;
+  background: #101820;
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] .app-shell {
+  background: #101820;
+}
+
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .detail-panel,
+:root[data-theme="dark"] .statusbar {
+  border-color: #2b3a49;
+  background: #17212b;
+  color: #9fb0c3;
+}
+
+:root[data-theme="dark"] .scopebar {
+  border-color: #2b3a49;
+  background: #131c25;
+}
+
+:root[data-theme="dark"] .brand span,
+:root[data-theme="dark"] .search-box,
+:root[data-theme="dark"] .search-results h3,
+:root[data-theme="dark"] .search-results span,
+:root[data-theme="dark"] .search-empty,
+:root[data-theme="dark"] .scope-button,
+:root[data-theme="dark"] .segmented-control button,
+:root[data-theme="dark"] .node-heading span,
+:root[data-theme="dark"] .node-footer,
+:root[data-theme="dark"] .detail-heading p,
+:root[data-theme="dark"] .detail-list dt,
+:root[data-theme="dark"] .panel-section-heading span,
+:root[data-theme="dark"] .relationship-item em,
+:root[data-theme="dark"] .muted,
+:root[data-theme="dark"] .detail-panel h3 {
+  color: #9fb0c3;
+}
+
+:root[data-theme="dark"] .icon-button,
+:root[data-theme="dark"] .scope-button,
+:root[data-theme="dark"] .search-box,
+:root[data-theme="dark"] .search-results,
+:root[data-theme="dark"] .generation-chip,
+:root[data-theme="dark"] .segmented-control {
+  border-color: #3a4b5d;
+  background: #1d2a36;
+  color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .icon-button.primary {
+  border-color: #23a0a3;
+  background: #158184;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .search-box input,
+:root[data-theme="dark"] .node-heading strong,
+:root[data-theme="dark"] .detail-heading h2,
+:root[data-theme="dark"] .detail-list dd,
+:root[data-theme="dark"] .route-notice strong {
+  color: #edf4fb;
+}
+
+:root[data-theme="dark"] .search-results {
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="dark"] .search-results button,
+:root[data-theme="dark"] .c4-node,
+:root[data-theme="dark"] .relationship-item {
+  border-color: #354656;
+  background: #1d2a36;
+  color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .search-results button:hover,
+:root[data-theme="dark"] .search-results button:focus,
+:root[data-theme="dark"] .scope-button.active,
+:root[data-theme="dark"] .c4-node.selected {
+  border-color: #c778a5;
+}
+
+:root[data-theme="dark"] .scope-button.active,
+:root[data-theme="dark"] .detail-action {
+  background: #a64d81;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .segmented-control button {
+  border-color: #3a4b5d;
+}
+
+:root[data-theme="dark"] .segmented-control button.active {
+  background: #dbe5ef;
+  color: #16202a;
+}
+
+:root[data-theme="dark"] .react-flow {
+  background:
+    linear-gradient(90deg, rgba(219, 229, 239, 0.055) 1px, transparent 1px),
+    linear-gradient(rgba(219, 229, 239, 0.055) 1px, transparent 1px),
+    #101820;
+}
+
+:root[data-theme="dark"] .c4-node {
+  border-left-color: #23a0a3;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25);
+}
+
+:root[data-theme="dark"] .c4-node.selected {
+  border-left-color: #c778a5;
+  box-shadow: 0 0 0 3px rgba(199, 120, 165, 0.24);
+}
+
+:root[data-theme="dark"] .c4-node.generated {
+  border-left-color: #c778a5;
+}
+
+:root[data-theme="dark"] .c4-node.dependency-active {
+  border-color: #23a0a3;
+  box-shadow: 0 0 0 3px rgba(35, 160, 163, 0.22);
+}
+
+:root[data-theme="dark"] .node-icon,
+:root[data-theme="dark"] .detail-icon,
+:root[data-theme="dark"] .node-provenance.authored,
+:root[data-theme="dark"] .authored-badge {
+  background: #173c42;
+  color: #83d5d1;
+}
+
+:root[data-theme="dark"] .node-icon.actor {
+  background: #443716;
+  color: #ffd36e;
+}
+
+:root[data-theme="dark"] .node-icon.system {
+  background: #1f3150;
+  color: #9ebcff;
+}
+
+:root[data-theme="dark"] .node-icon.component,
+:root[data-theme="dark"] .node-provenance.generated,
+:root[data-theme="dark"] .generated-badge {
+  background: #3a263f;
+  color: #e0a6ef;
+}
+
+:root[data-theme="dark"] .react-flow__edge-textbg {
+  fill: #17212b;
+}
+
+:root[data-theme="dark"] .react-flow__edge-text {
+  fill: #dbe5ef;
+}
+
+:root[data-theme="dark"] .react-flow__controls-button,
+:root[data-theme="dark"] .react-flow__minimap {
+  border-color: #3a4b5d;
+  background: #1d2a36;
+  color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .route-notice,
+:root[data-theme="dark"] .validation-item {
+  border-color: #6d4e24;
+  background: #2c2518;
+  color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .route-notice svg,
+:root[data-theme="dark"] .route-notice span,
+:root[data-theme="dark"] .route-notice p,
+:root[data-theme="dark"] .validation-item strong,
+:root[data-theme="dark"] .status-warning {
+  color: #f2b75f;
+}
+
+:root[data-theme="dark"] .metadata-row span,
+:root[data-theme="dark"] .generation-review-summary span,
+:root[data-theme="dark"] .generation-review-changes span,
+:root[data-theme="dark"] .source-preview-meta span {
+  background: #263746;
+  color: #d0dbe7;
+}
+
+:root[data-theme="dark"] .detail-copy {
+  color: #d0dbe7;
+}
+
+:root[data-theme="dark"] .generation-review,
+:root[data-theme="dark"] .source-preview pre,
+:root[data-theme="dark"] .yaml-diff {
+  border-color: #2b3a49;
+}
+
+:root[data-theme="dark"] .relationship-item strong {
+  color: #e0a6ef;
+}
+
+:root[data-theme="dark"] .relationship-item.generated {
+  border-color: #62446c;
+}
+
+:root[data-theme="dark"] .status-ok {
+  color: #83d5d1;
+}
+
 @media (max-width: 920px) {
   .app-shell {
     grid-template-rows: auto 42px minmax(0, 1fr) 30px;
@@ -822,5 +1034,9 @@ input {
   .detail-panel {
     border-top: 1px solid #d8dde4;
     border-left: 0;
+  }
+
+  :root[data-theme="dark"] .detail-panel {
+    border-top-color: #2b3a49;
   }
 }

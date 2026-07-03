@@ -23,6 +23,14 @@ export const nodeTypes = {
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 96;
 const LAYOUT_VERSION = 1;
+const DEFAULT_LAYOUT_OPTIONS = {
+  "elk.algorithm": "layered",
+  "elk.direction": "RIGHT",
+  "elk.spacing.nodeNode": "80",
+  "elk.spacing.edgeNode": "40",
+  "elk.spacing.edgeEdge": "20",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+};
 
 const elk = new ELK();
 const layoutCache = new Map<string, LayoutResult>();
@@ -35,19 +43,27 @@ type LayoutResult = {
 export type LayoutCacheOptions = {
   sourceSha?: string;
   scope?: ViewScope;
+  nodeDimensions?: Record<string, { width: number; height: number }>;
+  layoutOptions?: Record<string, string>;
 };
 
 export function clearLayoutCache() {
   layoutCache.clear();
 }
 
-export function layoutCacheKeyFor(view: DerivedView, options: Required<LayoutCacheOptions>): string {
+export function layoutCacheKeyFor(
+  view: DerivedView,
+  options: LayoutCacheOptions & { sourceSha: string; scope: ViewScope },
+): string {
+  const layoutOptions = { ...DEFAULT_LAYOUT_OPTIONS, ...options.layoutOptions };
+  const nodeDimensions = options.nodeDimensions ?? {};
   const layoutInput = {
     version: LAYOUT_VERSION,
-    nodeWidth: NODE_WIDTH,
-    nodeHeight: NODE_HEIGHT,
+    layoutOptions: sortedRecord(layoutOptions),
     nodes: view.nodes.map((node) => ({
       id: node.id,
+      width: nodeDimensions[node.id]?.width ?? NODE_WIDTH,
+      height: nodeDimensions[node.id]?.height ?? NODE_HEIGHT,
       name: node.element.name,
       type: node.element.type,
       kind: node.element.kind ?? null,
@@ -73,9 +89,16 @@ export function layoutCacheKeyFor(view: DerivedView, options: Required<LayoutCac
 }
 
 export async function layoutWithElk(view: DerivedView, options: LayoutCacheOptions = {}): Promise<LayoutResult> {
+  const layoutOptions = { ...DEFAULT_LAYOUT_OPTIONS, ...options.layoutOptions };
+  const nodeDimensions = options.nodeDimensions ?? {};
   const cacheKey =
     options.sourceSha && options.scope
-      ? layoutCacheKeyFor(view, { sourceSha: options.sourceSha, scope: options.scope })
+      ? layoutCacheKeyFor(view, {
+          sourceSha: options.sourceSha,
+          scope: options.scope,
+          nodeDimensions,
+          layoutOptions,
+        })
       : null;
   if (cacheKey) {
     const cached = layoutCache.get(cacheKey);
@@ -86,18 +109,11 @@ export async function layoutWithElk(view: DerivedView, options: LayoutCacheOptio
 
   const graph: ElkNode = {
     id: "root",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
-      "elk.spacing.nodeNode": "80",
-      "elk.spacing.edgeNode": "40",
-      "elk.spacing.edgeEdge": "20",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "120",
-    },
+    layoutOptions,
     children: view.nodes.map((node) => ({
       id: node.id,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      width: nodeDimensions[node.id]?.width ?? NODE_WIDTH,
+      height: nodeDimensions[node.id]?.height ?? NODE_HEIGHT,
     })),
     edges: view.edges.map((edge) => ({
       id: edge.id,
@@ -119,8 +135,8 @@ export async function layoutWithElk(view: DerivedView, options: LayoutCacheOptio
           x: position?.x ?? (index % 3) * 280,
           y: position?.y ?? Math.floor(index / 3) * 150,
         },
-        width: NODE_WIDTH,
-        height: NODE_HEIGHT,
+        width: nodeDimensions[node.id]?.width ?? NODE_WIDTH,
+        height: nodeDimensions[node.id]?.height ?? NODE_HEIGHT,
         data: {
           label: node.element.name,
           elementType: node.element.type,
@@ -165,4 +181,8 @@ function stableHash(value: string): string {
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, "0");
+}
+
+function sortedRecord(record: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(record).sort(([left], [right]) => left.localeCompare(right)));
 }

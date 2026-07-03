@@ -15,6 +15,16 @@ listed here are planned or deferred capabilities, not regressions.
 | Dependency highlighting and focus mode | Implemented | Hovering or selecting a node highlights connected dependencies; Linked focus mode dims unrelated nodes. |
 | macOS packaging | Ready | `npm run tauri:build:macos` builds unsigned universal macOS app and DMG artifacts for internal development. Signing/notarization remains a release step. |
 
+## MVP Hardening
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Persisted color theme | Implemented | The renderer stores the selected light/dark theme locally and reapplies it on startup. |
+| Last repository restore | Implemented | The desktop shell remembers the last opened repository path and reopens it when no active model is already loaded. |
+| Layout cache acceptance inputs | Implemented | ELK cache keys include layout options and measured node dimensions, not only model/source/scope data. |
+| MVP smoke command | Implemented | `npm run smoke:mvp` validates the CLI path from temporary repo creation through scan, generate, write, and drift check. |
+| Roadmap and quality-gate docs | Implemented | README and roadmap now document the MVP hardening gate and remaining deferred work. |
+
 ## Later Backlog
 
 | Item | Status | Notes |
