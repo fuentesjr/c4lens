@@ -1,10 +1,12 @@
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
 use c4lens_core::{acquire_repo_write_lock, repo_handle_from_path};
 use serde_json::Value;
+
+mod support;
+
+use support::{cleanup, fresh_test_dir};
 
 #[test]
 fn generate_does_not_write_without_write_flag() {
@@ -1613,18 +1615,4 @@ fn generate_check_rejects_symlinked_overlay_without_disclosing_target() {
     assert!(!output.contains("outside secret generated yaml"));
     cleanup(repo);
     cleanup(outside);
-}
-
-fn fresh_test_dir(name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("c4lens-cli-generate-{name}-{unique}"));
-    fs::create_dir_all(&root).expect("create test root");
-    root
-}
-
-fn cleanup(root: PathBuf) {
-    fs::remove_dir_all(root).ok();
 }

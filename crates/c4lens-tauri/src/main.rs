@@ -1,6 +1,7 @@
 mod app_state;
 mod commands;
 mod events;
+mod generation_candidate_store;
 mod model_watcher;
 
 use app_state::AppState;

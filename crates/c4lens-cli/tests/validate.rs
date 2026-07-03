@@ -1,10 +1,12 @@
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+
+mod support;
+
+use support::{cleanup, fresh_test_dir, write_generated_model, write_model};
 
 #[test]
 fn validate_succeeds_for_valid_authored_model() {
@@ -512,29 +514,4 @@ systems:
     assert_eq!(report["issues"][0]["path"], "/systems/payments/containers");
 
     cleanup(repo);
-}
-
-fn write_model(repo: &Path, contents: &str) {
-    fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
-    fs::write(repo.join("c4/model.yml"), contents).expect("write model");
-}
-
-fn write_generated_model(repo: &Path, contents: &str) {
-    fs::create_dir_all(repo.join("c4")).expect("create c4 dir");
-    fs::write(repo.join("c4/model.generated.yml"), contents).expect("write generated model");
-}
-
-fn fresh_test_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("c4lens-cli-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir(&path).expect("create test dir");
-    path
-}
-
-fn cleanup(path: PathBuf) {
-    let _ = fs::remove_dir_all(path);
 }

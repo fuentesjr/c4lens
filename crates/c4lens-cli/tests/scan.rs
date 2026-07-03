@@ -1,10 +1,10 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use assert_cmd::Command;
 use c4lens_core::{acquire_repo_write_lock, repo_handle_from_path};
 use serde_json::Value;
+
+mod support;
+
+use support::{cleanup, fresh_test_dir, write_file, write_file_bytes, write_model};
 
 #[test]
 fn scan_json_indexes_files_and_model_code_sources() {
@@ -130,34 +130,4 @@ fn scan_json_reports_scanner_limit_warnings() {
 
     cleanup(repo);
     cleanup(index_dir);
-}
-
-fn fresh_test_dir(name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("c4lens-cli-{name}-{unique}"));
-    fs::create_dir_all(&root).expect("create test root");
-    root
-}
-
-fn write_model(repo: &Path, contents: &str) {
-    write_file(repo, "c4/model.yml", contents);
-}
-
-fn write_file(repo: &Path, relative_path: &str, contents: &str) {
-    let path = repo.join(relative_path);
-    fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-    fs::write(path, contents).expect("write file");
-}
-
-fn write_file_bytes(repo: &Path, relative_path: &str, contents: &[u8]) {
-    let path = repo.join(relative_path);
-    fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-    fs::write(path, contents).expect("write bytes");
-}
-
-fn cleanup(root: PathBuf) {
-    fs::remove_dir_all(root).ok();
 }

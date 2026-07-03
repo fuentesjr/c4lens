@@ -26,23 +26,21 @@ import {
   UserRound,
 } from "lucide-react";
 import {
-  applyGenerated,
   fetchActiveModel,
   getElementCode,
-  generateModel,
   isTauriDesktop,
   listenToModelEvents,
   openRepositoryFromDialog,
   openInEditor,
   scanCodebase,
 } from "./ipc/client";
+import { useGenerationCandidate } from "./hooks/useGenerationCandidate";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
 import type {
   CodeRef,
   EffectiveModel,
   ElementNode,
-  GenerationDiff,
   GenerationSummary,
   ScanSummary,
   ValidationIssue,
@@ -85,15 +83,25 @@ export function App() {
   const [status, setStatus] = useState("Sample model ready");
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewState>(idleSourcePreview);
   const [indexRevision, setIndexRevision] = useState<string | null>(null);
-  const [generationCandidate, setGenerationCandidate] = useState<GenerationDiff | null>(null);
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isApplyingGenerated, setIsApplyingGenerated] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
   const [nodes, setNodes, onNodesChange] = useNodesState<C4FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const activeRepoIdRef = useRef(activeRepoId);
+  const {
+    candidate: generationCandidate,
+    isApplying: isApplyingGenerated,
+    isGenerating,
+    clearCandidate: clearGenerationCandidate,
+    runGenerate,
+    applyCandidate: applyGenerationCandidate,
+  } = useGenerationCandidate({
+    activeRepoIdRef,
+    setStatus,
+    formatError: errorStatus,
+    formatSummary: generationSummaryStatus,
+  });
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
@@ -306,11 +314,11 @@ export function App() {
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
         setIndexRevision(null);
-        setGenerationCandidate(null);
+        clearGenerationCandidate();
         setStatus(`Opened ${activeModel.repo.name}`);
       }
     });
-  }, [updateActiveRepoId]);
+  }, [clearGenerationCandidate, updateActiveRepoId]);
 
   useEffect(() => {
     let disposed = false;
@@ -336,7 +344,7 @@ export function App() {
         setRouteIssue(nextRoute.issue);
         setValidationOverride(null);
         setIndexRevision(null);
-        setGenerationCandidate(null);
+        clearGenerationCandidate();
         setStatus("Model updated");
       },
       onValidationFailed: (payload) => {
@@ -345,7 +353,7 @@ export function App() {
         }
 
         setValidationOverride(payload.validation);
-        setGenerationCandidate(null);
+        clearGenerationCandidate();
         setStatus("Model validation failed");
       },
       onIndexUpdated: (payload) => {
@@ -355,7 +363,7 @@ export function App() {
 
         setStatus(`Index updated: ${scanSummaryStatus(payload.summary)}`);
         setIndexRevision(payload.summary.scanToken);
-        setGenerationCandidate(null);
+        clearGenerationCandidate();
       },
     }).then((cleanup) => {
       if (disposed) {
@@ -369,7 +377,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [updateActiveRepoId]);
+  }, [clearGenerationCandidate, updateActiveRepoId]);
 
   const openRepo = useCallback(async () => {
     if (!isTauriDesktop()) {
@@ -387,7 +395,7 @@ export function App() {
       }
       updateActiveRepoId(result.repo.id);
       setIndexRevision(null);
-      setGenerationCandidate(null);
+      clearGenerationCandidate();
       if (result.model) {
         const nextRoute = resolveHashRoute(currentHashRoute(), result.model);
         setModel(result.model);
@@ -417,7 +425,7 @@ export function App() {
     } finally {
       setIsOpening(false);
     }
-  }, [updateActiveRepoId]);
+  }, [clearGenerationCandidate, updateActiveRepoId]);
 
   const runScan = useCallback(async () => {
     if (!isTauriDesktop()) {
@@ -433,7 +441,7 @@ export function App() {
       if (activeRepoIdRef.current === scanRepoId && summary.repo.id === scanRepoId) {
         setStatus(`Scanned ${scanSummaryStatus(summary)}`);
         setIndexRevision(summary.scanToken);
-        setGenerationCandidate(null);
+        clearGenerationCandidate();
       }
     } catch (error) {
       if (activeRepoIdRef.current === scanRepoId) {
@@ -442,67 +450,7 @@ export function App() {
     } finally {
       setIsScanning(false);
     }
-  }, []);
-
-  const runGenerate = useCallback(async () => {
-    if (!isTauriDesktop()) {
-      setStatus("Generation is available in the Tauri desktop shell");
-      return;
-    }
-
-    setIsGenerating(true);
-    setGenerationCandidate(null);
-    setStatus("Generating model");
-    const generationRepoId = activeRepoIdRef.current;
-    try {
-      const candidate = await generateModel({ scanFirst: true });
-      if (activeRepoIdRef.current === generationRepoId && candidate.repo.id === generationRepoId) {
-        setGenerationCandidate(candidate);
-        setStatus(`Generated ${generationSummaryStatus(candidate.summary)}`);
-      }
-    } catch (error) {
-      if (activeRepoIdRef.current === generationRepoId) {
-        setStatus(errorStatus(error, "Generation failed"));
-      }
-    } finally {
-      setIsGenerating(false);
-    }
-  }, []);
-
-  const applyGenerationCandidate = useCallback(async () => {
-    if (!generationCandidate) {
-      return;
-    }
-    if (!isTauriDesktop()) {
-      setStatus("Apply is available in the Tauri desktop shell");
-      return;
-    }
-
-    setIsApplyingGenerated(true);
-    setStatus("Applying generated model");
-    const generationRepoId = generationCandidate.repo.id;
-    try {
-      await applyGenerated({
-        generationId: generationCandidate.candidateId,
-        expectedAuthoredSha: generationCandidate.baseAuthoredSha,
-        expectedOverlaySha: generationCandidate.baseOverlaySha,
-        expectedModelSourceSha: generationCandidate.modelSourceSha,
-        expectedIndexScanToken: generationCandidate.indexScanToken,
-        expectedSchemaVersion: generationCandidate.schemaVersion,
-        selection: { acceptAll: true },
-      });
-      if (activeRepoIdRef.current === generationRepoId) {
-        setGenerationCandidate(null);
-        setStatus("Applied generated model");
-      }
-    } catch (error) {
-      if (activeRepoIdRef.current === generationRepoId) {
-        setStatus(errorStatus(error, "Apply failed"));
-      }
-    } finally {
-      setIsApplyingGenerated(false);
-    }
-  }, [generationCandidate]);
+  }, [clearGenerationCandidate]);
 
   const openSourceInEditor = useCallback(async () => {
     if (!isTauriDesktop() || sourcePreview.status !== "ready") {

@@ -74,5 +74,6 @@ npm run test
 
 ## Reference Docs
 
+- [Contributing](CONTRIBUTING.md)
 - [Desktop design](docs/design/c4lens-desktop-design.md)
 - [Desktop implementation spec](docs/spec/c4lens-desktop-spec.md)

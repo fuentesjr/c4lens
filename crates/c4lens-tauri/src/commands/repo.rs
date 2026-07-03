@@ -135,13 +135,7 @@ pub fn open_repo(
         *guard = Some(repo.clone());
     }
 
-    {
-        let mut guard = state
-            .latest_generation_candidate
-            .lock()
-            .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
-        *guard = None;
-    }
+    state.generation_candidates.clear()?;
 
     if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
         let _ = window.emit(
@@ -209,11 +203,7 @@ pub fn generate_model(
 ) -> Result<GenerationDiff, CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
     let diff = generate_model_for_repo(repo, params.unwrap_or_default(), None)?;
-    let mut candidate_guard = state
-        .latest_generation_candidate
-        .lock()
-        .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
-    *candidate_guard = Some(diff.clone());
+    state.generation_candidates.store(diff.clone())?;
     Ok(diff)
 }
 
@@ -224,17 +214,11 @@ pub fn apply_generated(
     state: State<AppState>,
 ) -> Result<(), CommandError> {
     let repo = active_repo_from_mutex(&state.active_repo)?;
-    let candidate = current_generation_candidate(&state.latest_generation_candidate)?;
+    let candidate = state.generation_candidates.current()?;
 
     apply_generated_candidate_to_repo(&repo, &params, &candidate, None)?;
 
-    {
-        let mut candidate_guard = state
-            .latest_generation_candidate
-            .lock()
-            .map_err(|_| CommandError::new("fs.write_failed", "Failed to update app state."))?;
-        *candidate_guard = None;
-    }
+    state.generation_candidates.clear()?;
 
     if let Ok(model) = load_effective_model_from_repo_recovering_generated_overlay(repo) {
         let _ = window.emit(
@@ -450,20 +434,6 @@ fn verify_apply_generated_params(
     }
 
     Ok(())
-}
-
-fn current_generation_candidate(
-    candidates: &Mutex<Option<GenerationDiff>>,
-) -> Result<GenerationDiff, CommandError> {
-    let guard = candidates.lock().map_err(|_| {
-        CommandError::new("fs.read_failed", "Failed to inspect generation candidates.")
-    })?;
-    guard.clone().ok_or_else(|| {
-        CommandError::new(
-            "generation.candidate_not_found",
-            "No generation candidate is available.",
-        )
-    })
 }
 
 fn apply_generated_candidate_to_repo(
@@ -971,11 +941,10 @@ mod tests {
 
     use super::{
         active_repo_from_mutex, apply_generated_candidate_to_repo,
-        apply_generated_candidate_to_repo_with_hook, current_generation_candidate,
-        generate_model_for_repo, get_element_code_for_repo, open_command_for_os,
-        open_in_editor_with_opener, resolve_repo_relative_path, scan_codebase_for_repo,
-        verify_apply_generated_params, ApplyGeneratedParams, ApplyGeneratedSelection,
-        GenerateModelParams, GenerationDiff,
+        apply_generated_candidate_to_repo_with_hook, generate_model_for_repo,
+        get_element_code_for_repo, open_command_for_os, open_in_editor_with_opener,
+        resolve_repo_relative_path, scan_codebase_for_repo, verify_apply_generated_params,
+        ApplyGeneratedParams, ApplyGeneratedSelection, GenerateModelParams, GenerationDiff,
     };
 
     fn build_apply_params_from_diff(diff: &GenerationDiff) -> ApplyGeneratedParams {
@@ -1013,7 +982,9 @@ mod tests {
     fn current_generation_candidate_missing_when_none_is_stored() {
         let state = AppState::default();
 
-        let error = current_generation_candidate(&state.latest_generation_candidate)
+        let error = state
+            .generation_candidates
+            .current()
             .expect_err("candidate missing");
 
         assert_eq!(error.code, "generation.candidate_not_found");
