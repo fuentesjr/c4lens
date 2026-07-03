@@ -54,6 +54,7 @@ listed here are planned or deferred capabilities, not regressions.
 | Release smoke command | Implemented | `npm run smoke:release` runs the quality gate, MVP smoke, unsigned macOS build, and artifact verification on macOS. |
 | macOS packaging CI | Implemented | CI builds and uploads unsigned universal macOS artifacts on pushes to `main` and manual workflow dispatches. |
 | Packaged-app release metadata smoke | Implemented | `npm run package:verify` now checks bundle name, identifier, version metadata, universal executable architecture, and DMG checksum validity. |
+| Internal MVP release checklist | Implemented | `docs/mvp-release-checklist.md` captures the automated gate, artifact paths, manual smoke, and known non-blocking MVP limits. |
 
 ## Later Backlog
 

@@ -46,6 +46,9 @@ unsigned MVP build: it checks the app bundle metadata, universal executable, and
 DMG image integrity before artifacts are uploaded. CI also runs the unsigned
 macOS packaging job on pushes to `main` and manual workflow dispatches.
 
+Use the [MVP release checklist](mvp-release-checklist.md) before sharing an
+internal macOS candidate.
+
 ## Signing
 
 Unsigned artifacts are for internal development only. Before sharing outside

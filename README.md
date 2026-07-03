@@ -60,6 +60,7 @@ This runs:
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
+- `npm run check:tauri-security`
 - `npm run check`
 - `npm run test`
 - `git diff --check`
@@ -71,6 +72,7 @@ For targeted checks:
 
 ```sh
 npm run check
+npm run check:tauri-security
 npm run test
 npm run smoke:mvp
 npm run smoke:release
@@ -89,5 +91,6 @@ universal macOS build, and artifact verification. It must run on macOS.
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/roadmap.md)
 - [Packaging](docs/packaging.md)
+- [MVP release checklist](docs/mvp-release-checklist.md)
 - [Desktop design](docs/design/c4lens-desktop-design.md)
 - [Desktop implementation spec](docs/spec/c4lens-desktop-spec.md)

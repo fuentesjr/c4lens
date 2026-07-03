@@ -8,6 +8,7 @@
     "build": "npm --workspace app run build",
     "check:all": "bash scripts/check.sh",
     "check": "npm --workspace app run check",
+    "check:tauri-security": "bash scripts/check_tauri_security.sh",
     "package:verify": "bash scripts/verify_macos_artifacts.sh",
     "smoke:release": "bash scripts/smoke_release.sh",
     "smoke:mvp": "bash scripts/smoke_mvp.sh",

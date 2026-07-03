@@ -98,6 +98,30 @@ run_cli validate --repo "$repo" --json >/dev/null
 scan_json="$tmp_root/scan.json"
 run_cli scan --repo "$repo" --json > "$scan_json"
 node -e 'const summary = require(process.argv[1]); if (summary.symbols < 10 || summary.imports < 5) { throw new Error(`expected multi-language symbols/imports, got ${summary.symbols}/${summary.imports}`); }' "$scan_json"
+repo_id="$(node -e 'const summary = require(process.argv[1]); process.stdout.write(summary.repo?.id ?? "");' "$scan_json")"
+if [[ -z "$repo_id" ]]; then
+  printf '%s\n' "Unable to resolve smoke repo id from scan output." >&2
+  exit 1
+fi
+
+lock_dir="$home/Library/Application Support/c4lens/locks"
+lock_path="$lock_dir/$repo_id.write.lock"
+mkdir -p "$lock_dir"
+printf '%s' "smoke-mvp" > "$lock_path"
+locked_scan_json="$tmp_root/locked-scan.json"
+if run_cli scan --repo "$repo" --json > "$locked_scan_json"; then
+  printf '%s\n' "Expected scan to fail while repository write lock is held." >&2
+  exit 1
+fi
+node -e 'const payload = require(process.argv[1]); const code = payload.issues?.[0]?.code; if (code !== "repo.write_locked") { throw new Error(`expected repo.write_locked, got ${code}`); }' "$locked_scan_json"
+locked_generate_json="$tmp_root/locked-generate.json"
+if run_cli generate --repo "$repo" --write --json > "$locked_generate_json"; then
+  printf '%s\n' "Expected generate --write to fail while repository write lock is held." >&2
+  exit 1
+fi
+node -e 'const payload = require(process.argv[1]); const code = payload.issues?.[0]?.code; if (code !== "repo.write_locked") { throw new Error(`expected repo.write_locked, got ${code}`); }' "$locked_generate_json"
+rm -f "$lock_path"
+
 generated_json="$tmp_root/generated.json"
 run_cli generate --repo "$repo" --scan --json > "$generated_json"
 node -e 'const payload = require(process.argv[1]); const count = (payload.generatedYaml.match(/description: Imports/g) || []).length; if (count < 5) { throw new Error(`expected at least 5 generated import relationships, got ${count}`); }' "$generated_json"
