@@ -9,7 +9,7 @@ require_contains() {
   local path="$1"
   local expected="$2"
 
-  if ! grep -Fq "$expected" "$path"; then
+  if ! grep -Fq -- "$expected" "$path"; then
     printf '%s\n' "Missing required MVP doc text in $path:" >&2
     printf '  %s\n' "$expected" >&2
     failures=1
@@ -32,6 +32,7 @@ require_contains README.md "[MVP QA triage](docs/mvp-qa-triage.md)"
 require_contains README.md "[Signing and notarization decision](docs/signing-notarization.md)"
 require_contains .github/workflows/ci.yml 'c4lens-${{ steps.release_version.outputs.version }}-macos-universal-${{ github.sha }}'
 require_contains .github/workflows/ci.yml "retention-days: 14"
+require_contains .github/workflows/ci.yml "--component clippy --component rustfmt"
 require_contains PROJECT_TRACKER.md "## Current Status"
 require_contains PROJECT_TRACKER.md "## In Flight"
 require_contains PROJECT_TRACKER.md "## Next Candidate Tasks"

@@ -29,6 +29,9 @@ Last completed batch:
 - Updated the first-run walkthrough to refresh schema before expecting
   `doctor` readiness.
 - Recorded the first-run QA result in `docs/qa/mvp-first-run-2026-07-03.md`.
+- Pushed the release-candidate commits and confirmed the macOS package job
+  reached artifact upload; fixed the `Check` job's Rust component install
+  syntax found by that push.
 - Confirmed no signed/notarized follow-up branch is required for internal-only
   MVP validation; that work remains deferred until wider sharing.
 
@@ -38,6 +41,8 @@ Verification status:
 - `npm run smoke:mvp`: passed.
 - `npm run qa:first-run`: passed.
 - `npm run check:all`: passed.
+- Push CI for `288caf6`: macOS package job uploaded artifacts; `Check` job
+  failed during Rust setup because of workflow syntax, fixed in this batch.
 - `git diff --check`: passed.
 
 ## Recent Batches
@@ -81,8 +86,7 @@ Pick from this list when the user asks for the next MVP task batch:
   `docs/mvp-first-run-walkthrough.md`.
 - Resolve blocker or high-severity findings from the installed desktop pass
   using `docs/mvp-qa-triage.md`.
-- Push the current release-candidate commits and confirm CI artifact upload
-  naming/retention in GitHub Actions.
+- Confirm the follow-up CI run passes after the Rust setup syntax fix.
 - If the candidate needs to be shared beyond internal reviewers, start the
   signed/notarized follow-up from `docs/signing-notarization.md`.
 
