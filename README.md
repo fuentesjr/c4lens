@@ -104,8 +104,10 @@ npm run test
 npm run package:manifest
 npm run smoke:mvp
 npm run smoke:release
+npm run qa:release-candidate
 npm run qa:first-run
 npm run qa:installed-macos
+npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -130,6 +132,14 @@ schema refresh through scan, generation, write, drift check, and validation.
 it mounts the DMG, copies `c4lens.app` to a temporary install directory, checks
 bundle metadata, verifies universal executable architectures, and cross-checks
 the release manifest.
+
+`npm run qa:release-candidate` runs the first-run CLI QA, installed macOS
+artifact QA, and MVP documentation contract check as a focused pre-human-review
+gate.
+
+`npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` verifies that a CI
+run uploaded the expected versioned macOS artifact and that the artifact is
+still retained.
 
 ## Reference Docs
 

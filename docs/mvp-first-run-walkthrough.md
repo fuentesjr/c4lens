@@ -62,6 +62,12 @@ Expected results:
 
 ## Validate The Desktop Path
 
+For the aggregate release-candidate gate before human desktop interaction, run:
+
+```sh
+npm run qa:release-candidate
+```
+
 Before the human desktop interaction pass, run the installed-artifact gate
 against the local release bundle:
 

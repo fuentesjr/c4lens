@@ -22,26 +22,34 @@ Current batch: none.
 
 Last completed batch:
 
-- Added `npm run qa:installed-macos` for automated installed-DMG artifact QA.
-- Ran the installed macOS artifact pass and recorded
-  `docs/qa/mvp-installed-artifact-2026-07-03.md`.
-- Confirmed CI run `28686171140` passed after the Rust setup syntax fix and
-  recorded `docs/qa/ci-artifact-2026-07-03.md`.
-- Confirmed no blocker/high findings from automated installed-artifact QA.
+- Added `npm run qa:release-candidate` as a focused pre-human-review gate for
+  first-run CLI QA, installed macOS artifact QA, and MVP docs contract checks.
+- Added `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` to verify
+  versioned CI artifact metadata, retention status, and non-empty artifact size.
+- Added `docs/qa/mvp-installed-gui-2026-07-03.md` as the current candidate
+  handoff for the remaining human installed-app interaction pass.
+- Updated README, roadmap, release checklist, artifact handling, first-run
+  walkthrough, and docs contract coverage for the new release-candidate checks.
+- Total elapsed task time: 9m 13s, from 2026-07-03 15:50:48 PDT to
+  2026-07-03 16:00:01 PDT.
 
 Verification status:
 
-- `npm run qa:installed-macos`: passed.
+- `npm run qa:release-candidate`: passed.
+- `npm run qa:ci-artifact -- 28686171140
+  26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`: passed; artifact
+  `c4lens-0.1.0-macos-universal-26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`
+  expires `2026-07-17T22:39:51Z` and is 24593811 bytes.
 - `npm run check:all`: passed.
 - `git diff --check`: passed.
-- CI run `28686171140`: passed; artifact
-  `c4lens-0.1.0-macos-universal-26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`
-  uploaded with expiration `2026-07-17T22:39:51Z`.
+- Human installed-app GUI pass: not run; use
+  `docs/qa/mvp-installed-gui-2026-07-03.md`.
 
 ## Recent Batches
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `56bec41` | Installed macOS artifact QA | Added `npm run qa:installed-macos`, recorded automated installed-artifact QA, and captured CI artifact metadata for run `28686171140`. |
 | `26e8e04` | CI Rust setup fix | Fixed CI Rust component setup syntax after push validation, docs contract coverage, and confirmed follow-up CI passed with artifact upload. |
 | `288caf6` | MVP first-run QA gate | Added `npm run qa:first-run`, first-run QA result logging, walkthrough corrections, and passed `npm run check:all`. |
 | `ba9a730` | MVP release artifact workflow hardening | Added versioned/retained CI artifacts, artifact handling docs, signing/notarization decision, QA triage, and passed `npm run check:all`. |
@@ -72,17 +80,19 @@ Useful targeted checks:
 - `npm run check:release-metadata`
 - `npm run check:mvp-docs`
 - `npm run package:verify`
+- `npm run qa:release-candidate`
+- `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>`
 
 ## Next Candidate Tasks
 
 Pick from this list when the user asks for the next MVP task batch:
 
-- Run the installed DMG desktop pass from
-  `docs/mvp-first-run-walkthrough.md`.
+- Run the human installed-app GUI pass from
+  `docs/qa/mvp-installed-gui-2026-07-03.md`.
 - Resolve blocker or high-severity findings from the installed desktop pass
   using `docs/mvp-qa-triage.md`.
-- Use the CI artifact from run `28686171140` for the next human installed-app
-  QA pass, or rebuild locally with `npm run smoke:release`.
+- Use the CI artifact from run `28686171140` while it is retained, or rebuild
+  locally with `npm run smoke:release` after `2026-07-17T22:39:51Z`.
 - If the candidate needs to be shared beyond internal reviewers, start the
   signed/notarized follow-up from `docs/signing-notarization.md`.
 

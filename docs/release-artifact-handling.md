@@ -30,6 +30,7 @@ Before sharing a locally built candidate, run:
 ```sh
 npm run package:verify
 npm run qa:installed-macos
+npm run qa:release-candidate
 ```
 
 `qa:installed-macos` mounts the DMG, copies `c4lens.app` into a temporary
@@ -49,6 +50,16 @@ c4lens-<version>-macos-universal-<commit-sha>
 
 The upload uses `retention-days: 14`. Treat the artifact as a short-lived
 internal validation candidate, not durable release storage.
+
+Verify the CI artifact metadata before downloading or sharing it:
+
+```sh
+npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
+```
+
+The command checks that the expected
+`c4lens-<version>-macos-universal-<commit-sha>` artifact exists, is non-empty,
+has not expired, and has an expiration timestamp.
 
 ## Version And Commit Verification
 

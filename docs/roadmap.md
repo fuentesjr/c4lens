@@ -69,6 +69,9 @@ listed here are planned or deferred capabilities, not regressions.
 | MVP manual QA template | Implemented | `docs/mvp-manual-qa-template.md` captures candidate metadata, automated gate results, and manual release smoke outcomes. |
 | First-run CLI QA gate | Implemented | `npm run qa:first-run` creates a demo repo with isolated state and verifies schema refresh, doctor readiness, scan, generation, write, drift check, and validation. |
 | Installed macOS artifact QA gate | Implemented | `npm run qa:installed-macos` mounts the DMG, copies the app to a temporary install directory, verifies installed bundle metadata, universal executable architectures, and manifest checksum. |
+| MVP release-candidate QA aggregate | Implemented | `npm run qa:release-candidate` runs the first-run CLI QA, installed macOS artifact QA, and MVP docs contract before the human installed-app pass. |
+| CI artifact contract QA | Implemented | `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` verifies the expected versioned macOS CI artifact exists, is non-empty, and has not expired. |
+| Installed GUI QA handoff log | Implemented | `docs/qa/mvp-installed-gui-2026-07-03.md` records the current candidate artifact and the remaining human installed-app interaction checklist. |
 | CI artifact retention and versioning | Implemented | CI uploads macOS artifacts as `c4lens-<version>-macos-universal-<commit-sha>` with 14-day retention. |
 | Release artifact handling guide | Implemented | `docs/release-artifact-handling.md` documents CI artifact selection, manifest verification, and retention expectations. |
 | MVP QA triage | Implemented | `docs/mvp-qa-triage.md` defines blocker/high/medium/low handling before an internal candidate is shared. |

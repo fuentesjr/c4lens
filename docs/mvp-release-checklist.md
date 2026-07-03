@@ -58,6 +58,15 @@ The package verifier checks:
 - The installed-artifact QA gate can mount the DMG, copy `c4lens.app` to a
   temporary install directory, and verify installed bundle metadata.
 
+For a focused release-candidate pass before human GUI validation, run:
+
+```sh
+npm run qa:release-candidate
+```
+
+This runs the first-run CLI QA, installed macOS artifact QA, and MVP
+documentation contract check.
+
 ## Artifact Location
 
 After a passing release smoke, artifacts are under:
@@ -80,6 +89,12 @@ CI also uploads this bundle directory from the macOS packaging job on pushes to
 Use [release artifact handling](release-artifact-handling.md) before sharing a
 candidate from CI.
 
+To verify the current CI artifact metadata before installing it, run:
+
+```sh
+npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
+```
+
 Use [MVP release notes](mvp-release-notes.md) as the candidate summary when
 sharing an internal build.
 
@@ -89,6 +104,10 @@ Use the [MVP first-run walkthrough](mvp-first-run-walkthrough.md) for a concise
 end-to-end validation path, and record formal candidate results with the
 [MVP manual QA template](mvp-manual-qa-template.md). Classify any findings with
 [MVP QA triage](mvp-qa-triage.md).
+
+For the current candidate handoff, use
+`docs/qa/mvp-installed-gui-2026-07-03.md` to drive and record the remaining
+installed-app interaction pass.
 
 To create a disposable repository for manual MVP checks:
 
