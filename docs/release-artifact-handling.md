@@ -29,7 +29,12 @@ Before sharing a locally built candidate, run:
 
 ```sh
 npm run package:verify
+npm run qa:installed-macos
 ```
+
+`qa:installed-macos` mounts the DMG, copies `c4lens.app` into a temporary
+install directory, verifies the installed app bundle metadata and universal
+executable, and checks the manifest DMG checksum against the artifact.
 
 ## CI Artifacts
 

@@ -62,6 +62,17 @@ Expected results:
 
 ## Validate The Desktop Path
 
+Before the human desktop interaction pass, run the installed-artifact gate
+against the local release bundle:
+
+```sh
+npm run qa:installed-macos
+```
+
+This mounts the DMG, copies `c4lens.app` to a temporary install directory,
+checks installed bundle metadata, verifies the universal executable, and
+cross-checks `release-manifest.json`.
+
 Launch the app in development or install the release candidate from the DMG:
 
 ```sh

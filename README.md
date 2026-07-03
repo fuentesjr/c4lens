@@ -105,6 +105,7 @@ npm run package:manifest
 npm run smoke:mvp
 npm run smoke:release
 npm run qa:first-run
+npm run qa:installed-macos
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -124,6 +125,11 @@ universal macOS build, and artifact verification. It must run on macOS.
 `npm run qa:first-run` creates a disposable demo repository, isolates c4lens
 state under temporary QA directories, and exercises the first-run CLI path from
 schema refresh through scan, generation, write, drift check, and validation.
+
+`npm run qa:installed-macos` verifies the local DMG as an installable artifact:
+it mounts the DMG, copies `c4lens.app` to a temporary install directory, checks
+bundle metadata, verifies universal executable architectures, and cross-checks
+the release manifest.
 
 ## Reference Docs
 

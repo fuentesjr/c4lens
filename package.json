@@ -15,6 +15,7 @@
     "package:manifest": "bash scripts/write_macos_release_manifest.sh",
     "package:verify": "bash scripts/verify_macos_artifacts.sh",
     "qa:first-run": "bash scripts/qa_first_run_cli.sh",
+    "qa:installed-macos": "bash scripts/qa_installed_macos_artifact.sh",
     "smoke:release": "bash scripts/smoke_release.sh",
     "smoke:mvp": "bash scripts/smoke_mvp.sh",
     "test": "npm --workspace app run test",

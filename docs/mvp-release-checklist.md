@@ -55,6 +55,8 @@ The package verifier checks:
 - Bundle name, identifier, and version match `tauri.conf.json`.
 - App executable exists and is universal for `x86_64` and `arm64`.
 - DMG checksum verifies with `hdiutil` and matches the release manifest.
+- The installed-artifact QA gate can mount the DMG, copy `c4lens.app` to a
+  temporary install directory, and verify installed bundle metadata.
 
 ## Artifact Location
 
@@ -97,6 +99,7 @@ npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo
 Before calling an internal candidate ready, install from the DMG on a current
 supported macOS machine and exercise these workflows:
 
+- Run `npm run qa:installed-macos` against the local release bundle.
 - Launch the app from the installed `c4lens.app`.
 - Confirm the status bar shows the expected app version.
 - Open a local repository.
