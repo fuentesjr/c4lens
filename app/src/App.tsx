@@ -53,6 +53,7 @@ import { serializeViewToPdfBase64, serializeViewToSvg, svgToPngBase64 } from "./
 import { useGenerationCandidate } from "./hooks/useGenerationCandidate";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
+import { APP_VERSION } from "./release";
 import type {
   CodeRef,
   EffectiveModel,
@@ -1000,6 +1001,7 @@ export function App() {
         <span>{layoutStatus}</span>
         <span>{view.nodes.length} nodes</span>
         <span>{view.edges.length} edges</span>
+        <span>v{APP_VERSION}</span>
       </footer>
     </div>
   );

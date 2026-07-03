@@ -49,10 +49,11 @@ The package verifier checks:
 
 - `c4lens.app` exists.
 - DMG exists and is non-empty.
+- `release-manifest.json` is written.
 - `Info.plist` is valid.
 - Bundle name, identifier, and version match `tauri.conf.json`.
 - App executable exists and is universal for `x86_64` and `arm64`.
-- DMG checksum verifies with `hdiutil`.
+- DMG checksum verifies with `hdiutil` and matches the release manifest.
 
 ## Artifact Location
 
@@ -67,6 +68,7 @@ Expected internal artifacts:
 ```text
 target/universal-apple-darwin/release/bundle/macos/c4lens.app
 target/universal-apple-darwin/release/bundle/dmg/c4lens_0.1.0_universal.dmg
+target/universal-apple-darwin/release/bundle/release-manifest.json
 ```
 
 CI also uploads this bundle directory from the macOS packaging job on pushes to
@@ -87,6 +89,7 @@ Before calling an internal candidate ready, install from the DMG on a current
 supported macOS machine and exercise these workflows:
 
 - Launch the app from the installed `c4lens.app`.
+- Confirm the status bar shows the expected app version.
 - Open a local repository.
 - Validate a valid `c4/model.yml`.
 - Introduce an invalid model edit and confirm the last valid canvas remains
@@ -101,6 +104,8 @@ supported macOS machine and exercise these workflows:
 - Toggle light and dark themes.
 - Resize to the configured minimum window size and confirm the canvas and detail
   panel remain usable.
+- Run `target/debug/c4lens --version` from a local build and confirm it matches
+  the app version.
 
 ## Known MVP Limits
 

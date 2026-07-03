@@ -77,6 +77,7 @@ npm run check:mvp-docs
 npm run check:release-metadata
 npm run check:tauri-security
 npm run test
+npm run package:manifest
 npm run smoke:mvp
 npm run smoke:release
 ```

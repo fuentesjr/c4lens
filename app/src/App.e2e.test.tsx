@@ -373,6 +373,15 @@ describe("App drill-down renderer behavior", () => {
     resetDomAndRoute();
   });
 
+  it("shows the release version in the status bar", async () => {
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    expect(container.querySelector(".statusbar")?.textContent).toContain("v0.1.0");
+
+    cleanup();
+  });
+
   it("double-clicks a system node to open that system's container view", async () => {
     const { container, cleanup } = mountApp();
     await flushLayout();

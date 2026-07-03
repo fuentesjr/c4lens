@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "c4lens")]
+#[command(version)]
 #[command(about = "Local C4 model validation, scanning, and generation")]
 struct Cli {
     #[command(subcommand)]

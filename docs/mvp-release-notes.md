@@ -8,6 +8,7 @@ unsigned universal macOS app bundle plus DMG for local/internal validation:
 ```text
 target/universal-apple-darwin/release/bundle/macos/c4lens.app
 target/universal-apple-darwin/release/bundle/dmg/c4lens_0.1.0_universal.dmg
+target/universal-apple-darwin/release/bundle/release-manifest.json
 ```
 
 ## Shipped Scope
@@ -23,8 +24,10 @@ target/universal-apple-darwin/release/bundle/dmg/c4lens_0.1.0_universal.dmg
 - Keyboardable global search across elements, indexed files, and symbols.
 - Native desktop repository open, save dialogs, source watching, and persisted
   last-repository/theme state.
+- Visible app version in the desktop status bar and `c4lens --version` output.
 - SVG, PDF, and PNG export from the current view.
 - Unsigned universal macOS app and DMG packaging for internal validation.
+- `release-manifest.json` with artifact paths, DMG byte size, and DMG SHA-256.
 
 ## Verification
 

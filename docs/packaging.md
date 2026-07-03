@@ -26,6 +26,8 @@ hdiutil create -srcfolder <staging-dir> -format UDZO c4lens_<version>_universal.
 ```
 
 Artifacts are written under `target/universal-apple-darwin/release/bundle/`.
+`npm run package:verify` also writes
+`target/universal-apple-darwin/release/bundle/release-manifest.json`.
 
 Verify that the app bundle, DMG, `Info.plist`, release metadata, executable,
 universal architectures, and DMG checksum are present and valid:
@@ -42,9 +44,10 @@ npm run smoke:release
 
 This runs the quality gate, MVP smoke, unsigned universal macOS build, and
 artifact verification. The artifact verifier is the packaged-app smoke for the
-unsigned MVP build: it checks the app bundle metadata, universal executable, and
-DMG image integrity before artifacts are uploaded. CI also runs the unsigned
-macOS packaging job on pushes to `main` and manual workflow dispatches.
+unsigned MVP build: it checks the app bundle metadata, universal executable, DMG
+image integrity, and release manifest before artifacts are uploaded. CI also
+runs the unsigned macOS packaging job on pushes to `main` and manual workflow
+dispatches.
 
 Use the [MVP release checklist](mvp-release-checklist.md) and
 [MVP release notes](mvp-release-notes.md) before sharing an internal macOS

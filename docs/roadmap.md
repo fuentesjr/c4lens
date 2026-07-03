@@ -56,6 +56,8 @@ listed here are planned or deferred capabilities, not regressions.
 | macOS packaging CI | Implemented | CI builds and uploads unsigned universal macOS artifacts on pushes to `main` and manual workflow dispatches. |
 | Packaged-app release metadata smoke | Implemented | `npm run package:verify` now checks bundle name, identifier, version metadata, universal executable architecture, and DMG checksum validity. |
 | Release metadata contract check | Implemented | `npm run check:release-metadata` verifies source versions, product identity, CLI binary naming, and release-doc artifact names before packaging. |
+| CLI and renderer version visibility | Implemented | `c4lens --version` and the desktop status bar expose the same release version checked by `npm run check:release-metadata`. |
+| macOS release manifest | Implemented | `npm run package:verify` writes and validates `release-manifest.json` with artifact paths, DMG size, and DMG SHA-256. |
 | MVP demo repository fixture | Implemented | `npm run demo:mvp-repo` creates the mixed-language repo fixture used by manual smoke and `npm run smoke:mvp`. |
 | MVP documentation contract check | Implemented | `npm run check:mvp-docs` keeps release-facing docs aligned with the MVP export and quality-gate contract. |
 | Internal MVP release notes | Implemented | `docs/mvp-release-notes.md` summarizes shipped scope, verification, artifact names, known limits, and upgrade notes for the internal candidate. |

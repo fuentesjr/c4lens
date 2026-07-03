@@ -12,6 +12,7 @@
     "check:release-metadata": "bash scripts/check_release_metadata.sh",
     "check:tauri-security": "bash scripts/check_tauri_security.sh",
     "demo:mvp-repo": "bash scripts/create_mvp_demo_repo.sh",
+    "package:manifest": "bash scripts/write_macos_release_manifest.sh",
     "package:verify": "bash scripts/verify_macos_artifacts.sh",
     "smoke:release": "bash scripts/smoke_release.sh",
     "smoke:mvp": "bash scripts/smoke_mvp.sh",

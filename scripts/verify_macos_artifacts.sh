@@ -101,6 +101,49 @@ if command -v hdiutil >/dev/null 2>&1; then
   hdiutil verify "$dmg_path" >/dev/null 2>&1
 fi
 
+bash scripts/write_macos_release_manifest.sh "$bundle_root" "$app_path" "$dmg_path" >/dev/null
+manifest_path="$bundle_root/release-manifest.json"
+
+node - "$manifest_path" "$dmg_path" "$product_name" "$version" "$identifier" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+
+const [manifestPath, dmgPath, productName, version, identifier] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const dmgSha256 = crypto.createHash("sha256").update(fs.readFileSync(dmgPath)).digest("hex");
+const errors = [];
+
+if (manifest.productName !== productName) {
+  errors.push(`Unexpected manifest productName: ${manifest.productName}`);
+}
+if (manifest.version !== version) {
+  errors.push(`Unexpected manifest version: ${manifest.version}`);
+}
+if (manifest.identifier !== identifier) {
+  errors.push(`Unexpected manifest identifier: ${manifest.identifier}`);
+}
+if (manifest.platform !== "macos-universal") {
+  errors.push(`Unexpected manifest platform: ${manifest.platform}`);
+}
+if (manifest.artifacts?.dmg?.sha256 !== dmgSha256) {
+  errors.push("Manifest DMG checksum does not match artifact");
+}
+if (!manifest.artifacts?.dmg?.bytes || manifest.artifacts.dmg.bytes <= 0) {
+  errors.push("Manifest DMG byte size is missing");
+}
+if (!manifest.artifacts?.app?.path?.endsWith("c4lens.app")) {
+  errors.push("Manifest app path is missing");
+}
+
+if (errors.length > 0) {
+  for (const error of errors) {
+    console.error(error);
+  }
+  process.exit(1);
+}
+NODE
+
 printf 'Verified macOS artifacts:\n'
 printf '  app: %s\n' "$app_path"
 printf '  dmg: %s\n' "$dmg_path"
+printf '  manifest: %s\n' "$manifest_path"
