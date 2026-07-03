@@ -30,6 +30,18 @@ run_cli() {
   HOME="$home" C4LENS_INDEX_DIR="$index_dir" "$cli" "$@"
 }
 
+init_repo="$tmp_root/init-repo"
+mkdir -p "$init_repo"
+init_json="$tmp_root/init.json"
+run_cli init --repo "$init_repo" --name "Smoke Initialized Repo" --json > "$init_json"
+node -e 'const payload = require(process.argv[1]); if (!payload.ok || payload.modelPath !== "c4/model.yml" || payload.schemaPath !== "c4/schema.json") { throw new Error(`unexpected init payload ${JSON.stringify(payload)}`); }' "$init_json"
+run_cli validate --repo "$init_repo" --json >/dev/null
+printf '%s\n' '{"title":"stale"}' > "$init_repo/c4/schema.json"
+schema_json="$tmp_root/schema.json"
+run_cli schema --repo "$init_repo" --json > "$schema_json"
+node -e 'const payload = require(process.argv[1]); if (!payload.ok || payload.schemaPath !== "c4/schema.json") { throw new Error(`unexpected schema payload ${JSON.stringify(payload)}`); }' "$schema_json"
+node -e 'const schema = require(process.argv[1]); if (schema.title !== "c4lens model" || schema.$id !== "https://c4lens.local/schema.json") { throw new Error("schema refresh did not restore bundled schema"); }' "$init_repo/c4/schema.json"
+
 run_cli validate --repo "$repo" --json >/dev/null
 scan_json="$tmp_root/scan.json"
 run_cli scan --repo "$repo" --json > "$scan_json"

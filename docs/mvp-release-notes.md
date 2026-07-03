@@ -14,6 +14,8 @@ target/universal-apple-darwin/release/bundle/release-manifest.json
 ## Shipped Scope
 
 - Local-first C4 model navigation from `c4/model.yml`.
+- CLI repository initialization with `c4lens init`.
+- CLI editor schema refresh with `c4lens schema`.
 - Generated, disposable model overlay support through `c4/model.generated.yml`.
 - Model validation with path, line, and column details where available.
 - Code scanning, symbol indexing, and best-effort import extraction for

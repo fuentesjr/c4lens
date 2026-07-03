@@ -1850,14 +1850,19 @@ c4lens
 Commands:
 
 ```text
+c4lens init [--repo PATH] [--name NAME] [--json]
 c4lens validate [--repo PATH] [--json]
 c4lens scan [--repo PATH] [--force] [--json]
 c4lens generate [--repo PATH] [--scan] [--check] [--write] [--json]
+c4lens schema [--repo PATH] [--json]
 ```
 
 Defaults:
 
 - `--repo` defaults to current working directory.
+- `init` creates `c4/model.yml` and refreshes `c4/schema.json` without
+  overwriting an existing authored model.
+- `schema` refreshes `c4/schema.json` from the bundled schema.
 - `validate` includes `model.generated.yml` if present.
 - `generate` without `--write` prints or returns a diff but does not write.
 - `generate --write` generates a candidate and applies it with `acceptAll: true`.

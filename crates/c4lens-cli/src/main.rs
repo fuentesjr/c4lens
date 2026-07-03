@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use c4lens_core::{
@@ -6,8 +8,9 @@ use c4lens_core::{
     canonicalize_repo_root, load_effective_model_from_repo, read_generated_overlay,
     render_generated_model_yaml, repo_handle_from_path, scan_repo,
     single_authored_internal_system_for_generation, validate_generated_overlay_paths,
-    validate_generated_overlay_yaml, write_generated_overlay_to_path, write_schema_json_if_missing,
-    CommandError, RepoHandle, ScanOptions, GENERATED_MODEL_PATH,
+    validate_generated_overlay_yaml, write_generated_overlay_to_path, write_schema_json,
+    write_schema_json_if_missing, CommandError, RepoHandle, ScanOptions, GENERATED_MODEL_PATH,
+    SCHEMA_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -22,6 +25,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Init {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Validate {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -48,11 +59,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    Schema {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
+        Command::Init { repo, name, json } => run_init(repo, name, json),
         Command::Validate { repo, json } => run_validate(repo, json),
         Command::Scan { repo, force, json } => run_scan(repo, force, json),
         Command::Generate {
@@ -62,9 +80,56 @@ fn main() {
             write,
             json,
         } => run_generate(repo, scan, check, write, json),
+        Command::Schema { repo, json } => run_schema(repo, json),
     };
 
     process::exit(exit_code);
+}
+
+fn run_init(repo: Option<PathBuf>, name: Option<String>, json: bool) -> i32 {
+    let repo = match resolve_repo(repo) {
+        Ok(repo) => repo,
+        Err(err) => {
+            eprintln!("{}", err);
+            return 3;
+        }
+    };
+
+    let model_name = name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&repo.name);
+
+    match init_repo_model(&repo, model_name) {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "repo": repo.name,
+                        "modelPath": result.model_path,
+                        "schemaPath": result.schema_path,
+                        "modelName": model_name,
+                    }))
+                    .expect("failed to serialize init response")
+                );
+            } else {
+                println!("created {}", result.model_path);
+                println!("refreshed {}", result.schema_path);
+            }
+            0
+        }
+        Err(error) => {
+            print_command_error(&error, json, "init");
+            if error.code == "repo.write_locked" {
+                3
+            } else {
+                1
+            }
+        }
+    }
 }
 
 fn run_validate(repo: Option<PathBuf>, json: bool) -> i32 {
@@ -340,6 +405,134 @@ fn run_generate(repo: Option<PathBuf>, scan: bool, check: bool, write: bool, jso
     0
 }
 
+fn run_schema(repo: Option<PathBuf>, json: bool) -> i32 {
+    let repo = match resolve_repo(repo) {
+        Ok(repo) => repo,
+        Err(err) => {
+            eprintln!("{}", err);
+            return 3;
+        }
+    };
+
+    let result = refresh_repo_schema(&repo);
+    match result {
+        Ok(schema_path) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "repo": repo.name,
+                        "schemaPath": schema_path,
+                    }))
+                    .expect("failed to serialize schema response")
+                );
+            } else {
+                println!("refreshed {schema_path}");
+            }
+            0
+        }
+        Err(error) => {
+            print_command_error(&error, json, "schema");
+            if error.code == "repo.write_locked" {
+                3
+            } else {
+                4
+            }
+        }
+    }
+}
+
+struct InitResult {
+    model_path: &'static str,
+    schema_path: &'static str,
+}
+
+fn init_repo_model(repo: &RepoHandle, model_name: &str) -> Result<InitResult, CommandError> {
+    let _write_lock = acquire_repo_write_lock(repo)?;
+    let repo_root = canonicalize_repo_root(repo)?;
+    let (model_dir, _) = validate_generated_overlay_paths(&repo_root)?;
+    let model_path = model_dir.join("model.yml");
+    ensure_model_can_be_created(&model_path)?;
+    write_schema_json(repo)?;
+
+    let mut model_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&model_path)
+        .map_err(|error| {
+            CommandError::with_details(
+                "fs.write_failed",
+                "Failed to create authored model.",
+                serde_json::json!({ "path": "c4/model.yml", "error": error.to_string() }),
+            )
+        })?;
+    let model_yaml = initial_model_yaml(model_name);
+    model_file
+        .write_all(model_yaml.as_bytes())
+        .map_err(|error| {
+            CommandError::with_details(
+                "fs.write_failed",
+                "Failed to write authored model.",
+                serde_json::json!({ "path": "c4/model.yml", "error": error.to_string() }),
+            )
+        })?;
+    model_file.sync_all().map_err(|error| {
+        CommandError::with_details(
+            "fs.write_failed",
+            "Failed to sync authored model.",
+            serde_json::json!({ "path": "c4/model.yml", "error": error.to_string() }),
+        )
+    })?;
+
+    Ok(InitResult {
+        model_path: "c4/model.yml",
+        schema_path: SCHEMA_PATH,
+    })
+}
+
+fn refresh_repo_schema(repo: &RepoHandle) -> Result<&'static str, CommandError> {
+    let _write_lock = acquire_repo_write_lock(repo)?;
+    write_schema_json(repo)?;
+    Ok(SCHEMA_PATH)
+}
+
+fn ensure_model_can_be_created(model_path: &Path) -> Result<(), CommandError> {
+    match fs::symlink_metadata(model_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(CommandError::with_details(
+                    "repo.path_denied",
+                    "Authored model file must not be a symlink.",
+                    serde_json::json!({ "path": "c4/model.yml" }),
+                ));
+            }
+            Err(CommandError::with_details(
+                "init.already_exists",
+                "c4/model.yml already exists.",
+                serde_json::json!({ "path": "c4/model.yml" }),
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CommandError::with_details(
+            "fs.read_failed",
+            "Failed to inspect authored model.",
+            serde_json::json!({ "path": "c4/model.yml", "error": error.to_string() }),
+        )),
+    }
+}
+
+fn initial_model_yaml(model_name: &str) -> String {
+    format!(
+        "# c4/model.yml\n# Authored C4 model for c4lens.\n# yaml-language-server: $schema=./schema.json\nname: {}\n",
+        yaml_single_quoted(model_name)
+    )
+}
+
+fn yaml_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn write_generated_overlay_with_lock(
     repo: &RepoHandle,
     generated_yaml: &str,
@@ -355,6 +548,10 @@ fn write_generated_overlay_with_lock(
 }
 
 fn print_generate_error(error: &CommandError, json: bool) {
+    print_command_error(error, json, "generate");
+}
+
+fn print_command_error(error: &CommandError, json: bool, stage: &str) {
     if json {
         println!(
             "{}",
@@ -362,7 +559,7 @@ fn print_generate_error(error: &CommandError, json: bool) {
                 "ok": false,
                 "issues": [{
                     "severity": "error",
-                    "stage": "generate",
+                    "stage": stage,
                     "code": error.code,
                     "message": error.message,
                     "details": error.details,

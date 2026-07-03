@@ -10,7 +10,8 @@ The project is intentionally local-first:
   and native desktop commands.
 - React/Vite renderer for navigation, derived C4 views, ELK layout, and canvas
   rendering.
-- CLI commands for headless validation, scanning, and generation.
+- CLI commands for repo initialization, schema refresh, validation, scanning,
+  and generation.
 - Best-effort symbol and import indexing for the MVP language set:
   TypeScript/JavaScript, Ruby, Rust, Go, and Python.
 
@@ -43,6 +44,19 @@ Run the Tauri app in development:
 npm run tauri:dev
 ```
 
+Initialize a repository for c4lens:
+
+```sh
+c4lens init --repo /path/to/repo --name "My System"
+```
+
+This creates `c4/model.yml` and refreshes `c4/schema.json` for editor
+autocomplete. To refresh only the editor schema later:
+
+```sh
+c4lens schema --repo /path/to/repo
+```
+
 ## Quality Gates
 
 Run the full local check before committing:
@@ -60,6 +74,7 @@ This runs:
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
+- `npm run check:release-metadata`
 - `npm run check:tauri-security`
 - `npm run check:mvp-docs`
 - `npm run check`
