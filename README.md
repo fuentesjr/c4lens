@@ -10,8 +10,8 @@ The project is intentionally local-first:
   and native desktop commands.
 - React/Vite renderer for navigation, derived C4 views, ELK layout, and canvas
   rendering.
-- CLI commands for repo initialization, schema refresh, validation, scanning,
-  and generation.
+- CLI commands for repo initialization, schema refresh, health checks,
+  validation, scanning, and generation.
 - Best-effort symbol and import indexing for the MVP language set:
   TypeScript/JavaScript, Ruby, Rust, Go, and Python.
 
@@ -55,6 +55,12 @@ autocomplete. To refresh only the editor schema later:
 
 ```sh
 c4lens schema --repo /path/to/repo
+```
+
+Check repository readiness before opening it in the app or sharing it:
+
+```sh
+c4lens doctor --repo /path/to/repo
 ```
 
 ## Quality Gates
@@ -113,6 +119,7 @@ universal macOS build, and artifact verification. It must run on macOS.
 
 ## Reference Docs
 
+- [Project tracker](PROJECT_TRACKER.md)
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/roadmap.md)
 - [Packaging](docs/packaging.md)

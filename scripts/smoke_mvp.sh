@@ -41,6 +41,9 @@ schema_json="$tmp_root/schema.json"
 run_cli schema --repo "$init_repo" --json > "$schema_json"
 node -e 'const payload = require(process.argv[1]); if (!payload.ok || payload.schemaPath !== "c4/schema.json") { throw new Error(`unexpected schema payload ${JSON.stringify(payload)}`); }' "$schema_json"
 node -e 'const schema = require(process.argv[1]); if (schema.title !== "c4lens model" || schema.$id !== "https://c4lens.local/schema.json") { throw new Error("schema refresh did not restore bundled schema"); }' "$init_repo/c4/schema.json"
+doctor_json="$tmp_root/init-doctor.json"
+run_cli doctor --repo "$init_repo" --json > "$doctor_json"
+node -e 'const payload = require(process.argv[1]); if (!payload.ok || !payload.model?.exists || !payload.schema?.exists) { throw new Error(`unexpected doctor payload ${JSON.stringify(payload)}`); }' "$doctor_json"
 
 run_cli validate --repo "$repo" --json >/dev/null
 scan_json="$tmp_root/scan.json"
@@ -75,6 +78,7 @@ run_cli generate --repo "$repo" --scan --json > "$generated_json"
 node -e 'const payload = require(process.argv[1]); const count = (payload.generatedYaml.match(/description: Imports/g) || []).length; if (count < 5) { throw new Error(`expected at least 5 generated import relationships, got ${count}`); }' "$generated_json"
 run_cli generate --repo "$repo" --write >/dev/null
 run_cli generate --repo "$repo" --check --json >/dev/null
+run_cli doctor --repo "$repo" --json >/dev/null
 test -f "$repo/c4/model.generated.yml"
 test -f "$repo/c4/schema.json"
 

@@ -39,7 +39,7 @@ The quality gate includes:
 
 The MVP smoke covers:
 
-- CLI init and schema refresh for first-run repository setup.
+- CLI init, schema refresh, and doctor checks for first-run repository setup.
 - CLI validate, scan, generate preview, generate write, and drift check.
 - Multi-language symbol/import indexing and generated import relationships.
 - Writer contention for scan and generated overlay writes.
@@ -96,6 +96,7 @@ supported macOS machine and exercise these workflows:
   and confirm `c4/model.yml` plus `c4/schema.json` are created.
 - Run `c4lens schema --repo <repo>` after editing `c4/schema.json` and confirm
   the bundled schema is restored.
+- Run `c4lens doctor --repo <repo>` and confirm it reports the repo as ready.
 - Validate a valid `c4/model.yml`.
 - Introduce an invalid model edit and confirm the last valid canvas remains
   visible while validation errors show path/line/column details.

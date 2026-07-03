@@ -25,6 +25,7 @@ listed here are planned or deferred capabilities, not regressions.
 | MVP smoke command | Implemented | `npm run smoke:mvp` validates the CLI path from temporary repo creation through scan, generate, write, drift check, and renderer E2E workflows. |
 | CLI repo initialization | Implemented | `c4lens init` creates `c4/model.yml` and refreshes `c4/schema.json` without overwriting an authored model. |
 | CLI schema refresh | Implemented | `c4lens schema` rewrites `c4/schema.json` from the bundled schema for editor autocomplete and schema drift repair. |
+| CLI repo doctor | Implemented | `c4lens doctor` reports model/schema/generated-overlay presence, validation health, and setup recommendations without mutating the repo. |
 | Roadmap and quality-gate docs | Implemented | README and roadmap now document the MVP hardening gate and remaining deferred work. |
 
 ## MVP Readiness
@@ -51,7 +52,7 @@ listed here are planned or deferred capabilities, not regressions.
 | Cross-language import relationship generation | Implemented | Generated component relationships now consume resolved internal imports from the full MVP language index, not only Rust crate imports. |
 | Multi-language generation regression coverage | Implemented | CLI generation tests cover import-derived relationships for TypeScript, Python, Ruby, Go, and Rust. |
 | Multi-language MVP smoke fixture | Implemented | `npm run smoke:mvp` now scans a mixed-language repo and checks generated import relationships across the MVP parser set. |
-| CLI onboarding smoke coverage | Implemented | `npm run smoke:mvp` covers `c4lens init`, `c4lens schema`, validation, scan, generation, writer locks, and renderer E2E workflows. |
+| CLI onboarding smoke coverage | Implemented | `npm run smoke:mvp` covers `c4lens init`, `c4lens schema`, `c4lens doctor`, validation, scan, generation, writer locks, and renderer E2E workflows. |
 | PNG export workflow coverage | Implemented | Renderer E2E coverage now exercises PNG export payload generation and desktop IPC handoff. |
 | PDF export workflow coverage | Implemented | Renderer E2E coverage now exercises PDF export payload generation and desktop IPC handoff. |
 | macOS artifact verification | Implemented | `npm run package:verify` validates the unsigned app bundle, DMG, plist, executable, and universal architectures. |

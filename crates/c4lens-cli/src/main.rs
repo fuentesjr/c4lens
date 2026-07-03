@@ -5,12 +5,13 @@ use std::process;
 
 use c4lens_core::{
     acquire_repo_write_lock, build_minimal_generated_model_from_authored_system,
-    canonicalize_repo_root, load_effective_model_from_repo, read_generated_overlay,
+    canonicalize_repo_root, load_effective_model_from_repo,
+    load_effective_model_from_repo_recovering_generated_overlay, read_generated_overlay,
     render_generated_model_yaml, repo_handle_from_path, scan_repo,
     single_authored_internal_system_for_generation, validate_generated_overlay_paths,
     validate_generated_overlay_yaml, write_generated_overlay_to_path, write_schema_json,
-    write_schema_json_if_missing, CommandError, RepoHandle, ScanOptions, GENERATED_MODEL_PATH,
-    SCHEMA_PATH,
+    write_schema_json_if_missing, CommandError, RepoHandle, ScanOptions, ValidationSeverity,
+    GENERATED_MODEL_PATH, SCHEMA_PATH,
 };
 use clap::{Parser, Subcommand};
 
@@ -25,6 +26,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Doctor {
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     Init {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -70,6 +77,7 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
+        Command::Doctor { repo, json } => run_doctor(repo, json),
         Command::Init { repo, name, json } => run_init(repo, name, json),
         Command::Validate { repo, json } => run_validate(repo, json),
         Command::Scan { repo, force, json } => run_scan(repo, force, json),
@@ -84,6 +92,54 @@ fn main() {
     };
 
     process::exit(exit_code);
+}
+
+fn run_doctor(repo: Option<PathBuf>, json: bool) -> i32 {
+    let repo = match resolve_repo(repo) {
+        Ok(repo) => repo,
+        Err(err) => {
+            eprintln!("{}", err);
+            return 3;
+        }
+    };
+
+    let result = inspect_repo_health(&repo);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result.json)
+                .expect("failed to serialize doctor response")
+        );
+    } else {
+        println!("repo: {}", repo.name);
+        println!("model: {}", result.model_status);
+        println!("schema: {}", result.schema_status);
+        println!("generated overlay: {}", result.generated_status);
+        println!(
+            "validation: {}",
+            if result.validation_errors > 0 {
+                format!("{} errors", result.validation_errors)
+            } else if result.validation_warnings > 0 {
+                format!("{} warnings", result.validation_warnings)
+            } else {
+                "ok".to_string()
+            }
+        );
+        if result.recommendations.is_empty() {
+            println!("status: ready");
+        } else {
+            println!("status: action needed");
+            for recommendation in &result.recommendations {
+                println!("- {recommendation}");
+            }
+        }
+    }
+
+    if result.ready {
+        0
+    } else {
+        1
+    }
 }
 
 fn run_init(repo: Option<PathBuf>, name: Option<String>, json: bool) -> i32 {
@@ -531,6 +587,151 @@ fn initial_model_yaml(model_name: &str) -> String {
 
 fn yaml_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+struct DoctorResult {
+    ready: bool,
+    model_status: &'static str,
+    schema_status: &'static str,
+    generated_status: &'static str,
+    validation_errors: usize,
+    validation_warnings: usize,
+    recommendations: Vec<String>,
+    json: serde_json::Value,
+}
+
+fn inspect_repo_health(repo: &RepoHandle) -> DoctorResult {
+    let repo_root = match canonicalize_repo_root(repo) {
+        Ok(root) => root,
+        Err(error) => {
+            let issue = serde_json::json!({
+                "severity": "error",
+                "stage": "doctor",
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            });
+            return DoctorResult {
+                ready: false,
+                model_status: "unavailable",
+                schema_status: "unavailable",
+                generated_status: "unavailable",
+                validation_errors: 1,
+                validation_warnings: 0,
+                recommendations: vec!["Open an existing repository path.".to_string()],
+                json: serde_json::json!({
+                    "ok": false,
+                    "repo": repo.name,
+                    "rootPath": repo.root_path,
+                    "model": { "path": "c4/model.yml", "exists": false },
+                    "schema": { "path": SCHEMA_PATH, "exists": false },
+                    "generatedOverlay": { "path": GENERATED_MODEL_PATH, "exists": false },
+                    "validation": { "ok": false, "issues": [issue] },
+                    "recommendations": ["Open an existing repository path."],
+                }),
+            };
+        }
+    };
+
+    let model_exists = repo_root.join("c4/model.yml").is_file();
+    let schema_exists = repo_root.join(SCHEMA_PATH).is_file();
+    let generated_exists = repo_root.join(GENERATED_MODEL_PATH).is_file();
+    let mut recommendations = Vec::new();
+    if !model_exists {
+        recommendations.push("Run c4lens init --repo <repo> --name \"My System\".".to_string());
+    }
+    if !schema_exists {
+        recommendations
+            .push("Run c4lens schema --repo <repo> to refresh editor schema.".to_string());
+    }
+
+    let validation_json =
+        match load_effective_model_from_repo_recovering_generated_overlay(repo.clone()) {
+            Ok(effective) => {
+                let validation_errors = effective
+                    .validation
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.severity == ValidationSeverity::Error)
+                    .count();
+                let validation_warnings = effective
+                    .validation
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.severity == ValidationSeverity::Warning)
+                    .count();
+                if validation_errors > 0 {
+                    recommendations.push("Fix validation errors in c4/model.yml.".to_string());
+                }
+                DoctorValidation {
+                    ok: validation_errors == 0,
+                    errors: validation_errors,
+                    warnings: validation_warnings,
+                    json: serde_json::to_value(effective.validation)
+                        .expect("failed to serialize validation report"),
+                }
+            }
+            Err(error) => {
+                let code = error.code.clone();
+                if code != "model.not_found" {
+                    recommendations.push(
+                        "Fix model loading errors before opening the repo in c4lens.".to_string(),
+                    );
+                }
+                DoctorValidation {
+                    ok: false,
+                    errors: 1,
+                    warnings: 0,
+                    json: serde_json::json!({
+                        "ok": false,
+                        "issues": [{
+                            "severity": "error",
+                            "stage": validation_stage_for_error(&error.code),
+                            "code": error.code,
+                            "message": error.message,
+                            "details": error.details,
+                        }],
+                    }),
+                }
+            }
+        };
+
+    let ready = model_exists && schema_exists && validation_json.ok;
+    let model_status = if model_exists { "present" } else { "missing" };
+    let schema_status = if schema_exists { "present" } else { "missing" };
+    let generated_status = if generated_exists {
+        "present"
+    } else {
+        "missing"
+    };
+    let json_recommendations = recommendations.clone();
+
+    DoctorResult {
+        ready,
+        model_status,
+        schema_status,
+        generated_status,
+        validation_errors: validation_json.errors,
+        validation_warnings: validation_json.warnings,
+        recommendations,
+        json: serde_json::json!({
+            "ok": ready,
+            "repo": repo.name,
+            "rootPath": repo.root_path,
+            "model": { "path": "c4/model.yml", "exists": model_exists },
+            "schema": { "path": SCHEMA_PATH, "exists": schema_exists },
+            "generatedOverlay": { "path": GENERATED_MODEL_PATH, "exists": generated_exists },
+            "validation": validation_json.json,
+            "recommendations": json_recommendations,
+        }),
+    }
+}
+
+struct DoctorValidation {
+    ok: bool,
+    errors: usize,
+    warnings: usize,
+    json: serde_json::Value,
 }
 
 fn write_generated_overlay_with_lock(

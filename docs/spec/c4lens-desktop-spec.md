@@ -1850,6 +1850,7 @@ c4lens
 Commands:
 
 ```text
+c4lens doctor [--repo PATH] [--json]
 c4lens init [--repo PATH] [--name NAME] [--json]
 c4lens validate [--repo PATH] [--json]
 c4lens scan [--repo PATH] [--force] [--json]
@@ -1860,6 +1861,8 @@ c4lens schema [--repo PATH] [--json]
 Defaults:
 
 - `--repo` defaults to current working directory.
+- `doctor` checks model/schema/generated-overlay presence, validation health,
+  and setup recommendations without writing to the repository.
 - `init` creates `c4/model.yml` and refreshes `c4/schema.json` without
   overwriting an existing authored model.
 - `schema` refreshes `c4/schema.json` from the bundled schema.
