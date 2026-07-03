@@ -74,10 +74,17 @@ For targeted checks:
 ```sh
 npm run check
 npm run check:mvp-docs
+npm run check:release-metadata
 npm run check:tauri-security
 npm run test
 npm run smoke:mvp
 npm run smoke:release
+```
+
+Create a disposable mixed-language repo for manual MVP checks:
+
+```sh
+npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo
 ```
 
 `npm run smoke:mvp` creates a temporary repository and exercises the CLI MVP
@@ -94,5 +101,6 @@ universal macOS build, and artifact verification. It must run on macOS.
 - [Product roadmap](docs/roadmap.md)
 - [Packaging](docs/packaging.md)
 - [MVP release checklist](docs/mvp-release-checklist.md)
+- [MVP release notes](docs/mvp-release-notes.md)
 - [Desktop design](docs/design/c4lens-desktop-design.md)
 - [Desktop implementation spec](docs/spec/c4lens-desktop-spec.md)

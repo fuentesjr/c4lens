@@ -17,10 +17,19 @@ require_contains() {
 }
 
 require_contains README.md "npm run check:mvp-docs"
+require_contains README.md "npm run check:release-metadata"
+require_contains README.md "npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo"
 require_contains docs/roadmap.md "| SVG/PDF/PNG export | Implemented |"
+require_contains docs/roadmap.md "| Release metadata contract check | Implemented |"
+require_contains docs/roadmap.md "| MVP demo repository fixture | Implemented |"
 require_contains docs/roadmap.md "| MVP documentation contract check | Implemented |"
+require_contains docs/roadmap.md "| Internal MVP release notes | Implemented |"
 require_contains docs/mvp-release-checklist.md "Export SVG, PDF, and PNG from the current view."
+require_contains docs/mvp-release-checklist.md "Release metadata contract check."
 require_contains docs/mvp-release-checklist.md "MVP documentation contract check."
+require_contains docs/mvp-release-checklist.md "npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo"
+require_contains docs/mvp-release-notes.md "Version: 0.1.0"
+require_contains docs/mvp-release-notes.md "SVG, PDF, and PNG export"
 require_contains docs/spec/c4lens-desktop-spec.md 'format: "svg" | "pdf" | "png";'
 require_contains docs/spec/c4lens-desktop-spec.md "pdfBase64?: string;"
 require_contains docs/design/c4lens-desktop-design.md "SVG/PDF/PNG"

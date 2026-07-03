@@ -31,6 +31,7 @@ This must pass before sharing an internal MVP artifact. It runs:
 The quality gate includes:
 
 - Rust format, Clippy, and test suite.
+- Release metadata contract check.
 - Renderer typecheck and test suite.
 - Tauri capability and production CSP checks.
 - MVP documentation contract check.
@@ -71,7 +72,16 @@ target/universal-apple-darwin/release/bundle/dmg/c4lens_0.1.0_universal.dmg
 CI also uploads this bundle directory from the macOS packaging job on pushes to
 `main` and manual workflow dispatches.
 
+Use [MVP release notes](mvp-release-notes.md) as the candidate summary when
+sharing an internal build.
+
 ## Manual Smoke
+
+To create a disposable repository for manual MVP checks:
+
+```sh
+npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo
+```
 
 Before calling an internal candidate ready, install from the DMG on a current
 supported macOS machine and exercise these workflows:

@@ -14,6 +14,7 @@ run_rust() {
 run_rust cargo fmt --all -- --check
 run_rust cargo clippy --workspace --all-targets -- -D warnings
 run_rust cargo test --workspace
+npm run check:release-metadata
 npm run check:tauri-security
 npm run check:mvp-docs
 npm run check
