@@ -7,11 +7,13 @@ listed here are planned or deferred capabilities, not regressions.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Search | Planned | Enable the topbar search control once the app can search elements, indexed files, and indexed symbols with deterministic, bounded results. |
-| SVG/PNG export | Planned | Enable export after the renderer can serialize the current view and the Tauri backend can save SVG or PNG through a native save dialog. |
-| Layout caching | Planned | Cache ELK output by source SHA, view scope, layout inputs, layout options, and measured node dimensions. Invalidate on model, source, option, or measurement changes. |
-| Generation diff/review UX | Planned | Expand the current accept-all generation flow with a diff summary, generated YAML diff, and eventually per-element or per-change review. |
-| macOS packaging | Planned | Produce signed and notarized macOS artifacts for the MVP target before release. |
+| Search | Implemented | Topbar search queries elements, indexed files, and indexed symbols with deterministic, bounded results. |
+| SVG/PNG export | Implemented | The renderer serializes the current view and the Tauri backend saves SVG or PNG through a native save dialog. |
+| Layout caching | Implemented | ELK output is cached by source SHA, view scope, and stable layout input. Model/source/scope/input changes produce a new cache key. |
+| Generation diff/review UX | Implemented | The app shows a diff summary, change list, generated YAML preview, and accept-all apply action. |
+| Generated provenance badges | Implemented | Generated elements and relationships are visibly marked in the canvas and detail panel. |
+| Dependency highlighting and focus mode | Implemented | Hovering or selecting a node highlights connected dependencies; Linked focus mode dims unrelated nodes. |
+| macOS packaging | Ready | `npm run tauri:build:macos` builds unsigned universal macOS app and DMG artifacts for internal development. Signing/notarization remains a release step. |
 
 ## Later Backlog
 

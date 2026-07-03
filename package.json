@@ -12,6 +12,7 @@
     "preview": "npm --workspace app run preview",
     "tauri": "npm --workspace app run tauri",
     "tauri:dev": "npm --workspace app run tauri:dev",
-    "tauri:build": "npm --workspace app run tauri:build"
+    "tauri:build": "npm --workspace app run tauri:build",
+    "tauri:build:macos": "npm --workspace app run tauri -- build --target universal-apple-darwin --bundles app,dmg --ci --no-sign"
   }
 }

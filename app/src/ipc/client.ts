@@ -8,8 +8,10 @@ import type {
   GenerationDiff,
   RepoHandle,
   ScanSummary,
+  SearchResults,
   ApplyGeneratedParams,
   ValidationReport,
+  ViewExportFormat,
 } from "../model/types";
 
 export interface OpenRepoResult {
@@ -112,12 +114,35 @@ export async function getElementCode(slug: string): Promise<CodeRef | null> {
   return await invoke<CodeRef | null>("get_element_code", { params: { slug } });
 }
 
+export async function searchRepository(params: { query: string; limit?: number }): Promise<SearchResults> {
+  if (!isTauriDesktop()) {
+    throw new Error("Search is available in the Tauri desktop shell");
+  }
+
+  return await invoke<SearchResults>("search", { params });
+}
+
 export async function openInEditor(path: string, line?: number, column?: number): Promise<void> {
   if (!isTauriDesktop()) {
     return;
   }
 
   await invoke("open_in_editor", { params: { path, line, column } });
+}
+
+export type ExportViewParams = {
+  format: ViewExportFormat;
+  scope: { level: string; slug?: string | null };
+  svg?: string;
+  pngBase64?: string;
+};
+
+export async function exportView(params: ExportViewParams): Promise<{ savedPath: string }> {
+  if (!isTauriDesktop()) {
+    throw new Error("Export is available in the Tauri desktop shell");
+  }
+
+  return await invoke<{ savedPath: string }>("export_view", { params });
 }
 
 export async function listenToModelEvents(handlers: ModelEventHandlers): Promise<UnlistenFn> {

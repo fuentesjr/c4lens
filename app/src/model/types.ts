@@ -166,6 +166,45 @@ export interface CodeRef {
   snippet?: string | null;
 }
 
+export interface SourceRange {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+export type ElementSearchMatch = "slug" | "name" | "description" | "tech";
+export type FileSearchMatch = "path";
+export type ViewExportFormat = "svg" | "png";
+
+export interface ElementSearchResult {
+  slug: Slug;
+  name: string;
+  type: ElementType;
+  match: ElementSearchMatch;
+}
+
+export interface FileSearchResult {
+  path: string;
+  language?: string | null;
+  match: FileSearchMatch;
+}
+
+export interface SymbolSearchResult {
+  path: string;
+  name: string;
+  qualifiedName?: string | null;
+  kind: string;
+  range: SourceRange;
+}
+
+export interface SearchResults {
+  query: string;
+  elements: ElementSearchResult[];
+  files: FileSearchResult[];
+  symbols: SymbolSearchResult[];
+}
+
 export interface EffectiveModel {
   repo: RepoHandle;
   sourceSha: string;

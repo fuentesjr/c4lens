@@ -4,10 +4,11 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleModel } from "./model/sample";
-import type { CodeRef, EffectiveModel, GenerationDiff, ScanSummary, ValidationReport } from "./model/types";
+import type { CodeRef, EffectiveModel, GenerationDiff, ScanSummary, SearchResults, ValidationReport } from "./model/types";
 
 type MockFlowNode = {
   id: string;
+  className?: string;
   data?: { label?: string };
 };
 
@@ -45,6 +46,9 @@ const ipcMocks = vi.hoisted(() => {
     state,
     fetchActiveModel: vi.fn<() => Promise<EffectiveModel | null>>(async () => null),
     applyGenerated: vi.fn<() => Promise<void>>(async () => {}),
+    exportView: vi.fn<(params: unknown) => Promise<{ savedPath: string }>>(async () => ({
+      savedPath: "/tmp/c4lens.svg",
+    })),
     generateModel: vi.fn<() => Promise<GenerationDiff>>(async () => generationDiffFor()),
     getElementCode: vi.fn<(slug: string) => Promise<CodeRef | null>>(async () => null),
     isTauriDesktop: vi.fn(() => false),
@@ -57,11 +61,18 @@ const ipcMocks = vi.hoisted(() => {
       () => Promise<{ repo: EffectiveModel["repo"]; model: EffectiveModel | null } | null>
     >(async () => null),
     scanCodebase: vi.fn<() => Promise<ScanSummary>>(async () => scanSummaryFor()),
+    searchRepository: vi.fn<(params: { query: string; limit?: number }) => Promise<SearchResults>>(async () => ({
+      query: "",
+      elements: [],
+      files: [],
+      symbols: [],
+    })),
   };
 });
 
 vi.mock("./ipc/client", () => ({
   applyGenerated: ipcMocks.applyGenerated,
+  exportView: ipcMocks.exportView,
   fetchActiveModel: ipcMocks.fetchActiveModel,
   generateModel: ipcMocks.generateModel,
   getElementCode: ipcMocks.getElementCode,
@@ -70,6 +81,7 @@ vi.mock("./ipc/client", () => ({
   openInEditor: ipcMocks.openInEditor,
   openRepositoryFromDialog: ipcMocks.openRepositoryFromDialog,
   scanCodebase: ipcMocks.scanCodebase,
+  searchRepository: ipcMocks.searchRepository,
 }));
 
 vi.mock("./model/sample", async () => {
@@ -99,11 +111,15 @@ vi.mock("@xyflow/react", async () => {
       nodes,
       onNodeClick,
       onNodeDoubleClick,
+      onNodeMouseEnter,
+      onNodeMouseLeave,
       children,
     }: {
       nodes: MockFlowNode[];
       onNodeClick?: (event: MouseEvent, node: MockFlowNode) => void;
       onNodeDoubleClick?: (event: MouseEvent, node: MockFlowNode) => void;
+      onNodeMouseEnter?: (event: MouseEvent, node: MockFlowNode) => void;
+      onNodeMouseLeave?: (event: MouseEvent, node: MockFlowNode) => void;
       children: ReactNode;
     }) => (
       <div>
@@ -112,12 +128,19 @@ vi.mock("@xyflow/react", async () => {
             <button
               key={node.id}
               type="button"
+              className={node.className}
               data-node-id={node.id}
               onClick={(event) => {
                 onNodeClick?.(event as unknown as MouseEvent, node);
               }}
               onDoubleClick={(event) => {
                 onNodeDoubleClick?.(event as unknown as MouseEvent, node);
+              }}
+              onMouseEnter={(event) => {
+                onNodeMouseEnter?.(event as unknown as MouseEvent, node);
+              }}
+              onMouseLeave={(event) => {
+                onNodeMouseLeave?.(event as unknown as MouseEvent, node);
               }}
             >
               {node.data?.label ?? node.id}
@@ -191,6 +214,8 @@ function resetDomAndRoute() {
   ipcMocks.fetchActiveModel.mockResolvedValue(null);
   ipcMocks.applyGenerated.mockReset();
   ipcMocks.applyGenerated.mockResolvedValue(undefined);
+  ipcMocks.exportView.mockReset();
+  ipcMocks.exportView.mockResolvedValue({ savedPath: "/tmp/c4lens.svg" });
   ipcMocks.generateModel.mockReset();
   ipcMocks.generateModel.mockResolvedValue(generationDiffFor());
   ipcMocks.getElementCode.mockReset();
@@ -204,6 +229,13 @@ function resetDomAndRoute() {
   ipcMocks.openRepositoryFromDialog.mockResolvedValue(null);
   ipcMocks.scanCodebase.mockReset();
   ipcMocks.scanCodebase.mockResolvedValue(scanSummaryFor());
+  ipcMocks.searchRepository.mockReset();
+  ipcMocks.searchRepository.mockResolvedValue({
+    query: "",
+    elements: [],
+    files: [],
+    symbols: [],
+  });
   ipcMocks.state.handlers = null;
   ipcMocks.state.unlisten.mockClear();
 }
@@ -244,6 +276,11 @@ function getDetailAction(container: HTMLElement, label: string): HTMLButtonEleme
   );
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+}
+
 describe("App drill-down renderer behavior", () => {
   afterEach(() => {
     resetDomAndRoute();
@@ -265,6 +302,40 @@ describe("App drill-down renderer behavior", () => {
     expect(labels).toContain("API Server");
     expect(labels).toContain("Event Bus");
     expect(labels).not.toContain("Acme API");
+
+    cleanup();
+  });
+
+  it("dims unrelated nodes when connected focus mode is active", async () => {
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const systemNode = getCanvasNode(container, "Acme API");
+    expect(systemNode).not.toBeNull();
+
+    act(() => {
+      systemNode!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const eventBusNode = getCanvasNode(container, "Event Bus");
+    expect(eventBusNode).not.toBeNull();
+    act(() => {
+      eventBusNode!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const linkedButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Linked",
+    );
+    expect(linkedButton).not.toBeNull();
+    act(() => {
+      linkedButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    const paymentsNode = getCanvasNode(container, "Payments");
+    expect(paymentsNode?.className).toContain("dependency-muted");
 
     cleanup();
   });
@@ -922,6 +993,8 @@ describe("App scan behavior", () => {
     ipcMocks.isTauriDesktop.mockReturnValue(true);
     ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
     const candidate = generationDiffFor({
+      beforeYaml: "name: Existing\n",
+      afterYaml: "name: Generated\nsystems:\n  invoice_api:\n    name: Invoice API\n",
       summary: {
         systemsAdded: 0,
         containersAdded: 1,
@@ -948,6 +1021,10 @@ describe("App scan behavior", () => {
     expect(ipcMocks.generateModel).toHaveBeenCalledWith({ scanFirst: true });
     expect(container.querySelector(".statusbar")?.textContent).toContain("Generated 1 container");
     expect(container.querySelector(".topbar")?.textContent).toContain("1 container, 2 components, 1 relationship");
+    expect(container.querySelector(".detail-panel")?.textContent).toContain("Generation Review");
+    expect(container.querySelector(".detail-panel")?.textContent).toContain("container: invoice_api");
+    expect(container.querySelector(".yaml-diff")?.textContent).toContain("- name: Existing");
+    expect(container.querySelector(".yaml-diff")?.textContent).toContain("+ name: Generated");
 
     const applyButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent?.trim() === "Apply",
@@ -970,6 +1047,82 @@ describe("App scan behavior", () => {
     });
     expect(container.querySelector(".statusbar")?.textContent).toContain("Applied generated model");
     expect(container.querySelector(".topbar")?.textContent).not.toContain("1 container, 2 components");
+
+    cleanup();
+  });
+
+  it("searches through Tauri and selects an element result", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.searchRepository.mockResolvedValueOnce({
+      query: "billing",
+      elements: [
+        {
+          slug: "billing_component",
+          name: "Billing Component",
+          type: "component",
+          match: "name",
+        },
+      ],
+      files: [],
+      symbols: [],
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const searchInput = container.querySelector<HTMLInputElement>(".search-box input");
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      searchInput!.focus();
+      setInputValue(searchInput!, "billing");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.searchRepository).toHaveBeenCalledWith({ query: "billing", limit: 8 });
+    const resultButton = Array.from(container.querySelectorAll<HTMLButtonElement>(".search-results button")).find(
+      (button) => button.textContent?.includes("Billing Component"),
+    );
+    expect(resultButton).not.toBeNull();
+
+    await act(async () => {
+      resultButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(window.location.hash).toBe("#/container/api_server/component/billing_component");
+    expect(container.querySelector(".detail-panel")?.textContent).toContain("Billing Component");
+
+    cleanup();
+  });
+
+  it("exports the current view as SVG", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.exportView.mockResolvedValueOnce({ savedPath: "/tmp/current-view.svg" });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const svgButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "SVG",
+    );
+    expect(svgButton).not.toBeNull();
+
+    await act(async () => {
+      svgButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.exportView).toHaveBeenCalledWith({
+      format: "svg",
+      scope: { level: "context" },
+      svg: expect.stringContaining("<svg"),
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Exported SVG to /tmp/current-view.svg");
 
     cleanup();
   });

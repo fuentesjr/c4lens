@@ -4,15 +4,17 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+use base64::{engine::general_purpose, Engine as _};
 use c4lens_core::{
     acquire_repo_write_lock, build_minimal_generated_model_from_authored_system,
     canonicalize_repo_root, default_index_path, get_element_code as core_get_element_code,
     load_effective_model_from_repo_recovering_generated_overlay, promote_generated_overlay,
-    render_generated_model_yaml, repo_handle_from_path, repo_scan_token, scan_repo,
+    render_generated_model_yaml, repo_handle_from_path, repo_scan_token, scan_repo, search_repo,
     single_authored_internal_system_for_generation, validate_generated_overlay_paths,
     validate_generated_overlay_yaml_with_report, write_generated_overlay_to_temp_file,
     write_schema_json_if_missing, CodeRef, CommandError, EffectiveModel, Model, RepoHandle,
-    ScanOptions, ScanSummary, ValidationReport, BUNDLED_MODEL_SCHEMA_JSON, GENERATED_MODEL_PATH,
+    ScanOptions, ScanSummary, SearchResults, ValidationReport, BUNDLED_MODEL_SCHEMA_JSON,
+    GENERATED_MODEL_PATH,
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,13 @@ pub struct ScanCodebaseParams {
 #[serde(rename_all = "camelCase")]
 pub struct GetElementCodeParams {
     pub slug: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchParams {
+    pub query: String,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -113,6 +122,35 @@ pub struct OpenInEditorParams {
     pub path: String,
     pub line: Option<u32>,
     pub column: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Svg,
+    Png,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportViewScope {
+    pub level: String,
+    pub slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportViewParams {
+    pub format: ExportFormat,
+    pub scope: ExportViewScope,
+    pub svg: Option<String>,
+    pub png_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportViewResult {
+    pub saved_path: String,
 }
 
 #[command]
@@ -197,6 +235,12 @@ pub fn get_element_code(
 }
 
 #[command]
+pub fn search(params: SearchParams, state: State<AppState>) -> Result<SearchResults, CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    search_repo_for_repo(&repo, &params.query, params.limit, None)
+}
+
+#[command]
 pub fn generate_model(
     params: Option<GenerateModelParams>,
     state: State<AppState>,
@@ -249,6 +293,15 @@ pub fn open_in_editor(
     )
 }
 
+#[command]
+pub fn export_view(
+    params: ExportViewParams,
+    state: State<AppState>,
+) -> Result<ExportViewResult, CommandError> {
+    let repo = active_repo_from_mutex(&state.active_repo)?;
+    export_view_for_repo_with_picker(&repo, &params, pick_export_path)
+}
+
 fn active_repo_from_mutex(
     active_repo: &Mutex<Option<RepoHandle>>,
 ) -> Result<RepoHandle, CommandError> {
@@ -270,6 +323,15 @@ fn get_element_code_for_repo(
         return Ok(None);
     }
     core_get_element_code(repo, &index_path, slug)
+}
+
+fn search_repo_for_repo(
+    repo: &RepoHandle,
+    query: &str,
+    limit: Option<usize>,
+    index_path: Option<PathBuf>,
+) -> Result<SearchResults, CommandError> {
+    search_repo(repo, index_path, query, limit.unwrap_or(20))
 }
 
 fn scan_codebase_for_repo(
@@ -878,6 +940,116 @@ fn resolve_repo_relative_path(
     Ok(resolved)
 }
 
+fn export_view_for_repo_with_picker<F>(
+    repo: &RepoHandle,
+    params: &ExportViewParams,
+    pick_path: F,
+) -> Result<ExportViewResult, CommandError>
+where
+    F: FnOnce(&RepoHandle, &ExportViewParams) -> Option<PathBuf>,
+{
+    let bytes = export_payload_bytes(params)?;
+    let path = pick_path(repo, params).ok_or_else(|| {
+        CommandError::new("export.cancelled", "Export destination was not selected.")
+    })?;
+
+    fs::write(&path, bytes).map_err(|error| {
+        CommandError::with_details(
+            "export.failed",
+            "Failed to write exported view.",
+            serde_json::json!({ "path": path.display().to_string(), "error": error.to_string() }),
+        )
+    })?;
+
+    Ok(ExportViewResult {
+        saved_path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn export_payload_bytes(params: &ExportViewParams) -> Result<Vec<u8>, CommandError> {
+    match params.format {
+        ExportFormat::Svg => params
+            .svg
+            .as_deref()
+            .filter(|svg| !svg.trim().is_empty())
+            .map(|svg| svg.as_bytes().to_vec())
+            .ok_or_else(|| CommandError::new("export.failed", "SVG export payload is missing.")),
+        ExportFormat::Png => {
+            let encoded = params
+                .png_base64
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    CommandError::new("export.failed", "PNG export payload is missing.")
+                })?;
+            general_purpose::STANDARD.decode(encoded).map_err(|error| {
+                CommandError::with_details(
+                    "export.failed",
+                    "PNG export payload is not valid base64.",
+                    serde_json::json!({ "error": error.to_string() }),
+                )
+            })
+        }
+    }
+}
+
+fn pick_export_path(repo: &RepoHandle, params: &ExportViewParams) -> Option<PathBuf> {
+    let extension = export_extension(&params.format);
+    let title = match params.format {
+        ExportFormat::Svg => "Export SVG view",
+        ExportFormat::Png => "Export PNG view",
+    };
+    let mut dialog = FileDialog::new()
+        .set_title(title)
+        .set_file_name(default_export_file_name(repo, params));
+    dialog = match params.format {
+        ExportFormat::Svg => dialog.add_filter("SVG", &["svg"]),
+        ExportFormat::Png => dialog.add_filter("PNG", &["png"]),
+    };
+    let selected = dialog.save_file()?;
+    if selected.extension().is_some() {
+        Some(selected)
+    } else {
+        Some(selected.with_extension(extension))
+    }
+}
+
+fn default_export_file_name(repo: &RepoHandle, params: &ExportViewParams) -> String {
+    let scope = params.scope.slug.as_deref().unwrap_or(&params.scope.level);
+    format!(
+        "{}-{}.{}",
+        filename_part(&repo.name),
+        filename_part(scope),
+        export_extension(&params.format)
+    )
+}
+
+fn filename_part(value: &str) -> String {
+    let mut output = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            output.push(character.to_ascii_lowercase());
+        } else if matches!(character, '-' | '_') {
+            output.push(character);
+        } else if !output.ends_with('-') {
+            output.push('-');
+        }
+    }
+    let output = output.trim_matches('-');
+    if output.is_empty() {
+        "view".to_string()
+    } else {
+        output.to_string()
+    }
+}
+
+fn export_extension(format: &ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Svg => "svg",
+        ExportFormat::Png => "png",
+    }
+}
+
 fn default_open_in_editor(
     path: &Path,
     _line: Option<u32>,
@@ -941,10 +1113,12 @@ mod tests {
 
     use super::{
         active_repo_from_mutex, apply_generated_candidate_to_repo,
-        apply_generated_candidate_to_repo_with_hook, generate_model_for_repo,
-        get_element_code_for_repo, open_command_for_os, open_in_editor_with_opener,
-        resolve_repo_relative_path, scan_codebase_for_repo, verify_apply_generated_params,
-        ApplyGeneratedParams, ApplyGeneratedSelection, GenerateModelParams, GenerationDiff,
+        apply_generated_candidate_to_repo_with_hook, export_view_for_repo_with_picker,
+        generate_model_for_repo, get_element_code_for_repo, open_command_for_os,
+        open_in_editor_with_opener, resolve_repo_relative_path, scan_codebase_for_repo,
+        search_repo_for_repo, verify_apply_generated_params, ApplyGeneratedParams,
+        ApplyGeneratedSelection, ExportFormat, ExportViewParams, ExportViewScope,
+        GenerateModelParams, GenerationDiff,
     };
 
     fn build_apply_params_from_diff(diff: &GenerationDiff) -> ApplyGeneratedParams {
@@ -1192,6 +1366,95 @@ systems:
         assert_eq!(summary.deleted_files, 0);
 
         cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn search_repo_for_repo_returns_indexed_results() {
+        let root = fresh_test_dir("search-command-repo");
+        let index_root = fresh_test_dir("search-command-index");
+        let index_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Search Repo
+systems:
+  app:
+    name: Search App
+    code: src/search.rs
+"#,
+        );
+        write_file(
+            &root,
+            "src/search.rs",
+            "pub struct SearchIndex;\npub fn search_everything() {}\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_codebase_for_repo(repo.clone(), false, Some(index_path.clone())).expect("scan repo");
+
+        let results =
+            search_repo_for_repo(&repo, "search", Some(20), Some(index_path)).expect("search repo");
+
+        assert_eq!(results.query, "search");
+        assert_eq!(results.elements[0].slug, "app");
+        assert_eq!(results.files[0].path, "src/search.rs");
+        assert_eq!(results.symbols[0].name, "SearchIndex");
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn export_view_for_repo_writes_svg_payload() {
+        let root = fresh_test_dir("export-view-svg");
+        let output_path = root.join("exports").join("view.svg");
+        fs::create_dir_all(output_path.parent().expect("output parent")).expect("create output");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = ExportViewParams {
+            format: ExportFormat::Svg,
+            scope: ExportViewScope {
+                level: "context".to_string(),
+                slug: None,
+            },
+            svg: Some("<svg><text>c4lens</text></svg>".to_string()),
+            png_base64: None,
+        };
+
+        let result =
+            export_view_for_repo_with_picker(&repo, &params, |_, _| Some(output_path.clone()))
+                .expect("export svg");
+
+        assert_eq!(result.saved_path, output_path.to_string_lossy());
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("read export"),
+            "<svg><text>c4lens</text></svg>"
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn export_view_for_repo_decodes_png_payload() {
+        let root = fresh_test_dir("export-view-png");
+        let output_path = root.join("view.png");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let params = ExportViewParams {
+            format: ExportFormat::Png,
+            scope: ExportViewScope {
+                level: "context".to_string(),
+                slug: None,
+            },
+            svg: None,
+            png_base64: Some("AQIDBA==".to_string()),
+        };
+
+        export_view_for_repo_with_picker(&repo, &params, |_, _| Some(output_path.clone()))
+            .expect("export png");
+
+        assert_eq!(fs::read(&output_path).expect("read png"), [1, 2, 3, 4]);
+
         cleanup(root);
     }
 

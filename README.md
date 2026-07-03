@@ -76,5 +76,6 @@ npm run test
 
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/roadmap.md)
+- [Packaging](docs/packaging.md)
 - [Desktop design](docs/design/c4lens-desktop-design.md)
 - [Desktop implementation spec](docs/spec/c4lens-desktop-spec.md)

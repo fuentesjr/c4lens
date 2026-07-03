@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sampleModel } from "../model/sample";
 import { deriveView } from "../view_deriver/deriveView";
-import { layoutWithElk } from "./elkLayout";
+import { clearLayoutCache, layoutCacheKeyFor, layoutWithElk } from "./elkLayout";
 
 describe("layoutWithElk", () => {
   it("produces finite, non-overlapping node positions for the sample context view", async () => {
@@ -21,6 +21,40 @@ describe("layoutWithElk", () => {
         expect(overlaps(layout.nodes[index], layout.nodes[next])).toBe(false);
       }
     }
+  });
+
+  it("reuses cached layout results for the same source, scope, and input", async () => {
+    clearLayoutCache();
+    const scope = { level: "context" as const };
+    const view = deriveView(sampleModel, scope);
+
+    const first = await layoutWithElk(view, { sourceSha: sampleModel.sourceSha, scope });
+    const second = await layoutWithElk(view, { sourceSha: sampleModel.sourceSha, scope });
+
+    expect(second).toBe(first);
+  });
+
+  it("changes cache keys when source, scope, or layout input changes", () => {
+    const contextScope = { level: "context" as const };
+    const containerScope = { level: "container" as const, slug: "acme_api" };
+    const contextView = deriveView(sampleModel, contextScope);
+    const containerView = deriveView(sampleModel, containerScope);
+
+    const contextKey = layoutCacheKeyFor(contextView, {
+      sourceSha: sampleModel.sourceSha,
+      scope: contextScope,
+    });
+    const changedSourceKey = layoutCacheKeyFor(contextView, {
+      sourceSha: "another-source",
+      scope: contextScope,
+    });
+    const containerKey = layoutCacheKeyFor(containerView, {
+      sourceSha: sampleModel.sourceSha,
+      scope: containerScope,
+    });
+
+    expect(changedSourceKey).not.toBe(contextKey);
+    expect(containerKey).not.toBe(contextKey);
   });
 });
 

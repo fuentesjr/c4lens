@@ -162,6 +162,71 @@ pub struct CodeRef {
     pub snippet: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRange {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ElementSearchMatch {
+    Slug,
+    Name,
+    Description,
+    Tech,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileSearchMatch {
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElementSearchResult {
+    pub slug: Slug,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub element_type: ElementType,
+    #[serde(rename = "match")]
+    pub match_field: ElementSearchMatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchResult {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(rename = "match")]
+    pub match_field: FileSearchMatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolSearchResult {
+    pub path: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualified_name: Option<String>,
+    pub kind: String,
+    pub range: SourceRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResults {
+    pub query: String,
+    pub elements: Vec<ElementSearchResult>,
+    pub files: Vec<FileSearchResult>,
+    pub symbols: Vec<SymbolSearchResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
     pub from: Slug,

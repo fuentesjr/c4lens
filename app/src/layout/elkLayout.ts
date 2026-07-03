@@ -1,7 +1,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
 import ELK, { type ElkNode } from "elkjs/lib/elk.bundled.js";
-import type { DerivedView } from "../view_deriver/deriveView";
+import type { DerivedView, ViewScope } from "../view_deriver/deriveView";
 
 export type C4NodeData = {
   label: string;
@@ -22,13 +22,68 @@ export const nodeTypes = {
 
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 96;
+const LAYOUT_VERSION = 1;
 
 const elk = new ELK();
+const layoutCache = new Map<string, LayoutResult>();
 
-export async function layoutWithElk(view: DerivedView): Promise<{
+type LayoutResult = {
   nodes: C4FlowNode[];
   edges: Edge[];
-}> {
+};
+
+export type LayoutCacheOptions = {
+  sourceSha?: string;
+  scope?: ViewScope;
+};
+
+export function clearLayoutCache() {
+  layoutCache.clear();
+}
+
+export function layoutCacheKeyFor(view: DerivedView, options: Required<LayoutCacheOptions>): string {
+  const layoutInput = {
+    version: LAYOUT_VERSION,
+    nodeWidth: NODE_WIDTH,
+    nodeHeight: NODE_HEIGHT,
+    nodes: view.nodes.map((node) => ({
+      id: node.id,
+      name: node.element.name,
+      type: node.element.type,
+      kind: node.element.kind ?? null,
+      external: Boolean(node.element.external),
+      generated: node.element.generated,
+      status: node.element.status,
+      tech: node.element.tech ?? null,
+    })),
+    edges: view.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label,
+      generated: edge.generated,
+    })),
+  };
+  return [
+    options.sourceSha,
+    options.scope.level,
+    options.scope.slug ?? "root",
+    stableHash(JSON.stringify(layoutInput)),
+  ].join(":");
+}
+
+export async function layoutWithElk(view: DerivedView, options: LayoutCacheOptions = {}): Promise<LayoutResult> {
+  const cacheKey =
+    options.sourceSha && options.scope
+      ? layoutCacheKeyFor(view, { sourceSha: options.sourceSha, scope: options.scope })
+      : null;
+  if (cacheKey) {
+    const cached = layoutCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
+
   const graph: ElkNode = {
     id: "root",
     layoutOptions: {
@@ -54,7 +109,7 @@ export async function layoutWithElk(view: DerivedView): Promise<{
   const layouted = await elk.layout(graph);
   const positions = new Map((layouted.children ?? []).map((node) => [node.id, node]));
 
-  return {
+  const result = {
     nodes: view.nodes.map((node, index) => {
       const position = positions.get(node.id);
       return {
@@ -93,4 +148,21 @@ export async function layoutWithElk(view: DerivedView): Promise<{
       },
     })),
   };
+
+  if (cacheKey) {
+    layoutCache.set(cacheKey, result);
+  }
+
+  return result;
+}
+
+function stableHash(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, "0");
 }

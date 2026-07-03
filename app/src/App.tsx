@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Children, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Background,
   Controls,
@@ -26,6 +26,7 @@ import {
   UserRound,
 } from "lucide-react";
 import {
+  exportView,
   fetchActiveModel,
   getElementCode,
   isTauriDesktop,
@@ -33,7 +34,9 @@ import {
   openRepositoryFromDialog,
   openInEditor,
   scanCodebase,
+  searchRepository,
 } from "./ipc/client";
+import { serializeViewToSvg, svgToPngBase64 } from "./export/viewExport";
 import { useGenerationCandidate } from "./hooks/useGenerationCandidate";
 import { layoutWithElk, type C4FlowNode, type C4NodeData } from "./layout/elkLayout";
 import { sampleModel } from "./model/sample";
@@ -41,10 +44,16 @@ import type {
   CodeRef,
   EffectiveModel,
   ElementNode,
+  GenerationDiff,
   GenerationSummary,
   ScanSummary,
+  SearchResults,
+  ElementSearchResult,
+  FileSearchResult,
+  SymbolSearchResult,
   ValidationIssue,
   ValidationReport,
+  ViewExportFormat,
 } from "./model/types";
 import { buildHashRoute, resolveHashRoute, type RouteIssue } from "./navigation/routes";
 import {
@@ -72,6 +81,21 @@ const idleSourcePreview: SourcePreviewState = {
   message: null,
 };
 
+const emptySearchResults: SearchResults = {
+  query: "",
+  elements: [],
+  files: [],
+  symbols: [],
+};
+
+type FocusMode = "all" | "connected";
+
+type DependencyState = {
+  activeSlug: string | null;
+  connectedNodeIds: Set<string>;
+  activeEdgeIds: Set<string>;
+};
+
 export function App() {
   const initialRoute = useMemo(() => resolveHashRoute(currentHashRoute(), sampleModel), []);
   const [model, setModel] = useState<EffectiveModel>(sampleModel);
@@ -83,6 +107,13 @@ export function App() {
   const [status, setStatus] = useState("Sample model ready");
   const [sourcePreview, setSourcePreview] = useState<SourcePreviewState>(idleSourcePreview);
   const [indexRevision, setIndexRevision] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResults>(emptySearchResults);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isExporting, setIsExporting] = useState<ViewExportFormat | null>(null);
+  const [hoveredSlug, setHoveredSlug] = useState<string | null>(null);
+  const [focusMode, setFocusMode] = useState<FocusMode>("all");
   const [isOpening, setIsOpening] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState("Layout ready");
@@ -105,6 +136,16 @@ export function App() {
 
   const view = useMemo(() => deriveView(model, scope), [model, scope]);
   const selectedElement = selectedSlug ? model.elementsBySlug[selectedSlug] : null;
+  const activeDependencySlug = hoveredSlug ?? selectedSlug;
+  const dependencyState = useMemo(() => dependencyStateFor(view, activeDependencySlug), [activeDependencySlug, view]);
+  const decoratedNodes = useMemo(
+    () => decorateNodes(nodes, selectedSlug, dependencyState, focusMode),
+    [dependencyState, focusMode, nodes, selectedSlug],
+  );
+  const decoratedEdges = useMemo(
+    () => decorateEdges(edges, dependencyState, focusMode),
+    [dependencyState, edges, focusMode],
+  );
   const visibleSourcePreview = useMemo(
     () => sourcePreviewForSelection(sourcePreview, activeRepoId, selectedElement),
     [activeRepoId, selectedElement, sourcePreview],
@@ -205,7 +246,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     setLayoutStatus("Laying out");
-    layoutWithElk(view)
+    layoutWithElk(view, { sourceSha: model.sourceSha, scope })
       .then((layout) => {
         if (cancelled) {
           return;
@@ -223,7 +264,48 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [setEdges, setNodes, view]);
+  }, [model.sourceSha, scope, setEdges, setNodes, view]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) {
+      setSearchResults(emptySearchResults);
+      setIsSearching(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setIsSearching(true);
+    const timeout = window.setTimeout(() => {
+      const search = isTauriDesktop()
+        ? searchRepository({ query: trimmedQuery, limit: 8 })
+        : Promise.resolve(searchLocalModel(model, trimmedQuery, 8));
+      search
+        .then((results) => {
+          if (!cancelled) {
+            setSearchResults(results);
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setSearchResults({ ...emptySearchResults, query: trimmedQuery });
+            setStatus(errorStatus(error, "Search failed"));
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsSearching(false);
+          }
+        });
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [indexRevision, model, searchQuery]);
 
   useEffect(() => {
     setNodes((currentNodes) =>
@@ -465,6 +547,70 @@ export function App() {
     }
   }, [sourcePreview]);
 
+  const openSearchPath = useCallback(async (path: string, range?: { startLine: number; startColumn: number }) => {
+    if (!isTauriDesktop()) {
+      setStatus(path);
+      return;
+    }
+
+    try {
+      await openInEditor(path, range?.startLine, range?.startColumn);
+      setStatus(`Opened ${path}`);
+    } catch (error) {
+      setStatus(errorStatus(error, "Failed to open search result"));
+    }
+  }, []);
+
+  const focusSearchElement = useCallback(
+    (slug: string) => {
+      const element = model.elementsBySlug[slug];
+      if (!element) {
+        return;
+      }
+      const targetScope = scopeForElement(element);
+      if (!targetScope) {
+        return;
+      }
+
+      if (element.type === "component") {
+        navigateTo(targetScope, element.slug);
+      } else {
+        navigateTo(targetScope);
+        setSelectedSlug(element.slug);
+        setRouteIssue(null);
+      }
+      setSearchQuery("");
+      setSearchResults(emptySearchResults);
+      setIsSearchFocused(false);
+    },
+    [model.elementsBySlug, navigateTo],
+  );
+
+  const runExport = useCallback(
+    async (format: ViewExportFormat) => {
+      if (!isTauriDesktop()) {
+        setStatus("Export is available in the Tauri desktop shell");
+        return;
+      }
+
+      setIsExporting(format);
+      try {
+        const serialized = serializeViewToSvg(nodes, edges, model.model.name);
+        const params =
+          format === "svg"
+            ? { format, scope, svg: serialized.svg }
+            : { format, scope, pngBase64: await svgToPngBase64(serialized) };
+        const result = await exportView(params);
+        setStatus(`Exported ${format.toUpperCase()} to ${result.savedPath}`);
+      } catch (error) {
+        setStatus(errorStatus(error, "Export failed"));
+      } finally {
+        setIsExporting(null);
+      }
+    },
+    [edges, model.model.name, nodes, scope],
+  );
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -508,14 +654,36 @@ export function App() {
               </button>
             </div>
           ) : null}
-          <label className="search-box">
-            <Search size={16} aria-hidden="true" />
-            <input placeholder="Search" disabled />
-          </label>
-          <button className="icon-button" disabled title="Export">
-            <Download size={17} aria-hidden="true" />
-            <span>Export</span>
-          </button>
+          <SearchBox
+            query={searchQuery}
+            results={searchResults}
+            isFocused={isSearchFocused}
+            isSearching={isSearching}
+            onQueryChange={setSearchQuery}
+            onFocusChange={setIsSearchFocused}
+            onElementSelect={focusSearchElement}
+            onFileSelect={(result) => void openSearchPath(result.path)}
+            onSymbolSelect={(result) => void openSearchPath(result.path, result.range)}
+          />
+          <div className="export-actions" aria-label="Export view">
+            <button
+              className="icon-button"
+              onClick={() => void runExport("svg")}
+              disabled={Boolean(isExporting) || nodes.length === 0}
+              title="Export SVG"
+            >
+              <Download size={17} aria-hidden="true" />
+              <span>{isExporting === "svg" ? "Saving" : "SVG"}</span>
+            </button>
+            <button
+              className="icon-button compact"
+              onClick={() => void runExport("png")}
+              disabled={Boolean(isExporting) || nodes.length === 0}
+              title="Export PNG"
+            >
+              <span>{isExporting === "png" ? "Saving" : "PNG"}</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -544,17 +712,36 @@ export function App() {
             {container.name}
           </button>
         ))}
+        <div className="scope-spacer" />
+        <div className="segmented-control" aria-label="Dependency focus">
+          <button
+            className={focusMode === "all" ? "active" : ""}
+            type="button"
+            onClick={() => setFocusMode("all")}
+          >
+            All
+          </button>
+          <button
+            className={focusMode === "connected" ? "active" : ""}
+            type="button"
+            onClick={() => setFocusMode("connected")}
+          >
+            Linked
+          </button>
+        </div>
       </nav>
 
       <main className="workspace">
         <section className="canvas-region" aria-label="Architecture canvas">
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={decoratedNodes}
+            edges={decoratedEdges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={(_, node) => selectNode(node.id)}
+            onNodeMouseEnter={(_, node) => setHoveredSlug(node.id)}
+            onNodeMouseLeave={() => setHoveredSlug(null)}
             onNodeDoubleClick={(_, node) => {
               const nextScope = nextScopeForDrilldown(model, scope, model.elementsBySlug[node.id]);
               if (nextScope) {
@@ -582,8 +769,11 @@ export function App() {
           validationReport={activeValidation}
           warningIssues={warningIssues}
           errorIssues={errorIssues}
+          generationCandidate={generationCandidate}
+          isApplyingGenerated={isApplyingGenerated}
           onDrillDown={navigateTo}
           onOpenInEditor={openSourceInEditor}
+          onApplyGeneration={applyGenerationCandidate}
         />
       </main>
 
@@ -634,8 +824,11 @@ function DetailPanel({
   validationReport,
   warningIssues,
   errorIssues,
+  generationCandidate,
+  isApplyingGenerated,
   onDrillDown,
   onOpenInEditor,
+  onApplyGeneration,
 }: {
   selectedElement: ElementNode | null;
   sourcePreview: SourcePreviewState;
@@ -645,8 +838,11 @@ function DetailPanel({
   validationReport: ValidationReport;
   warningIssues: ValidationIssue[];
   errorIssues: ValidationIssue[];
+  generationCandidate: GenerationDiff | null;
+  isApplyingGenerated: boolean;
   onDrillDown: (scope: ViewScope) => void;
   onOpenInEditor: () => void;
+  onApplyGeneration: () => void;
 }) {
   const relatedEdges = selectedElement
     ? view.edges.filter((edge) => edge.source === selectedElement.slug || edge.target === selectedElement.slug)
@@ -655,6 +851,13 @@ function DetailPanel({
 
   return (
     <aside className="detail-panel">
+      {generationCandidate ? (
+        <GenerationReview
+          candidate={generationCandidate}
+          isApplying={isApplyingGenerated}
+          onApply={onApplyGeneration}
+        />
+      ) : null}
       {selectedElement ? (
         <>
           <div className="detail-heading">
@@ -667,7 +870,9 @@ function DetailPanel({
           <div className="metadata-row">
             <span>{selectedElement.type}</span>
             <span>{selectedElement.status}</span>
-            {selectedElement.generated ? <span>generated</span> : <span>authored</span>}
+            <span className={selectedElement.generated ? "generated-badge" : "authored-badge"}>
+              {selectedElement.generated ? "generated" : "authored"}
+            </span>
           </div>
           {selectedElement.description ? <p className="detail-copy">{selectedElement.description}</p> : null}
           <dl className="detail-list">
@@ -694,10 +899,11 @@ function DetailPanel({
           <div className="relationship-list">
             {relatedEdges.length > 0 ? (
               relatedEdges.map((edge) => (
-                <div className="relationship-item" key={edge.id}>
+                <div className={edge.generated ? "relationship-item generated" : "relationship-item"} key={edge.id}>
                   <span>{model.elementsBySlug[edge.source]?.name ?? edge.source}</span>
                   <strong>{edge.label}</strong>
                   <span>{model.elementsBySlug[edge.target]?.name ?? edge.target}</span>
+                  <em>{edge.generated ? "generated" : "authored"}</em>
                 </div>
               ))
             ) : (
@@ -747,6 +953,55 @@ function DetailPanel({
   );
 }
 
+function GenerationReview({
+  candidate,
+  isApplying,
+  onApply,
+}: {
+  candidate: GenerationDiff;
+  isApplying: boolean;
+  onApply: () => void;
+}) {
+  const diffLines = useMemo(
+    () => yamlDiffLines(candidate.beforeYaml ?? "", candidate.afterYaml),
+    [candidate.afterYaml, candidate.beforeYaml],
+  );
+
+  return (
+    <section className="generation-review" aria-label="Generation review">
+      <div className="panel-section-heading">
+        <h3>Generation Review</h3>
+        <span>{candidate.changes.length} changes</span>
+      </div>
+      <div className="generation-review-summary">
+        {generationSummaryParts(candidate.summary).map((part) => (
+          <span key={part}>{part}</span>
+        ))}
+      </div>
+      <div className="generation-review-changes">
+        {candidate.changes.slice(0, 6).map((change) => (
+          <span key={change.id}>
+            {change.target}: {change.slug ?? change.relationshipKey ?? change.id}
+          </span>
+        ))}
+        {candidate.changes.length > 6 ? <span>{candidate.changes.length - 6} more changes</span> : null}
+      </div>
+      <pre className="yaml-diff" aria-label="Generated YAML diff">
+        {diffLines.map((line, index) => (
+          <span className={`yaml-diff-line ${line.kind}`} key={`${line.kind}-${index}`}>
+            {line.prefix}
+            {line.text}
+          </span>
+        ))}
+      </pre>
+      <button className="detail-action" onClick={onApply} disabled={isApplying}>
+        <CheckCircle2 size={14} aria-hidden="true" />
+        <span>{isApplying ? "Applying" : "Apply generated overlay"}</span>
+      </button>
+    </section>
+  );
+}
+
 function SourcePreview({
   state,
   onOpenInEditor,
@@ -781,6 +1036,101 @@ function SourcePreview({
           )}
         </>
       ) : null}
+    </section>
+  );
+}
+
+function SearchBox({
+  query,
+  results,
+  isFocused,
+  isSearching,
+  onQueryChange,
+  onFocusChange,
+  onElementSelect,
+  onFileSelect,
+  onSymbolSelect,
+}: {
+  query: string;
+  results: SearchResults;
+  isFocused: boolean;
+  isSearching: boolean;
+  onQueryChange: (query: string) => void;
+  onFocusChange: (focused: boolean) => void;
+  onElementSelect: (slug: string) => void;
+  onFileSelect: (result: FileSearchResult) => void;
+  onSymbolSelect: (result: SymbolSearchResult) => void;
+}) {
+  const trimmedQuery = query.trim();
+  const resultCount = results.elements.length + results.files.length + results.symbols.length;
+  const isOpen = isFocused && Boolean(trimmedQuery);
+
+  const closeAfter = (action: () => void) => {
+    action();
+    onQueryChange("");
+    onFocusChange(false);
+  };
+
+  return (
+    <div className="search-control">
+      <label className="search-box">
+        <Search size={16} aria-hidden="true" />
+        <input
+          placeholder="Search"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          onFocus={() => onFocusChange(true)}
+          onBlur={() => onFocusChange(false)}
+        />
+      </label>
+      {isOpen ? (
+        <div className="search-results" role="listbox" onMouseDown={(event) => event.preventDefault()}>
+          {isSearching ? <div className="search-empty">Searching</div> : null}
+          {!isSearching && resultCount === 0 ? <div className="search-empty">No results</div> : null}
+          <SearchResultGroup title="Elements">
+            {results.elements.map((result) => (
+              <button key={result.slug} type="button" onClick={() => closeAfter(() => onElementSelect(result.slug))}>
+                <strong>{result.name}</strong>
+                <span>{result.type} - {result.match}</span>
+              </button>
+            ))}
+          </SearchResultGroup>
+          <SearchResultGroup title="Files">
+            {results.files.map((result) => (
+              <button key={result.path} type="button" onClick={() => closeAfter(() => onFileSelect(result))}>
+                <strong>{result.path}</strong>
+                <span>{result.language ?? "file"}</span>
+              </button>
+            ))}
+          </SearchResultGroup>
+          <SearchResultGroup title="Symbols">
+            {results.symbols.map((result) => (
+              <button
+                key={`${result.path}:${result.range.startLine}:${result.name}`}
+                type="button"
+                onClick={() => closeAfter(() => onSymbolSelect(result))}
+              >
+                <strong>{result.qualifiedName ?? result.name}</strong>
+                <span>{result.path}:{result.range.startLine}</span>
+              </button>
+            ))}
+          </SearchResultGroup>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchResultGroup({ title, children }: { title: string; children: ReactNode }) {
+  const items = Children.toArray(children);
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <h3>{title}</h3>
+      <div>{items}</div>
     </section>
   );
 }
@@ -825,15 +1175,19 @@ function scanSummaryStatus(summary: ScanSummary): string {
 }
 
 function generationSummaryStatus(summary: GenerationSummary): string {
-  const parts = [
+  const parts = generationSummaryParts(summary);
+
+  return parts.length > 0 ? parts.join(", ") : "No generated changes";
+}
+
+function generationSummaryParts(summary: GenerationSummary): string[] {
+  return [
     countLabel(summary.systemsAdded, "system"),
     countLabel(summary.containersAdded, "container"),
     countLabel(summary.componentsAdded, "component"),
     countLabel(summary.relationshipsAdded, "relationship"),
     countLabel(summary.externalSystemsAdded, "external system"),
   ].filter((part): part is string => Boolean(part));
-
-  return parts.length > 0 ? parts.join(", ") : "No generated changes";
 }
 
 function countLabel(count: number, singular: string): string | null {
@@ -859,10 +1213,197 @@ function errorStatus(error: unknown, fallback: string): string {
   return fallback;
 }
 
+type YamlDiffLine = {
+  kind: "same" | "added" | "removed";
+  prefix: string;
+  text: string;
+};
+
+function yamlDiffLines(beforeYaml: string, afterYaml: string, maxLines = 180): YamlDiffLine[] {
+  const before = splitYamlLines(beforeYaml);
+  const after = splitYamlLines(afterYaml);
+  if (before.length === 0) {
+    return after.slice(0, maxLines).map((text) => ({ kind: "added", prefix: "+ ", text }));
+  }
+
+  const lines: YamlDiffLine[] = [];
+  const lineCount = Math.max(before.length, after.length);
+  for (let index = 0; index < lineCount && lines.length < maxLines; index += 1) {
+    const beforeLine = before[index];
+    const afterLine = after[index];
+    if (beforeLine === afterLine && beforeLine !== undefined) {
+      lines.push({ kind: "same", prefix: "  ", text: beforeLine });
+      continue;
+    }
+    if (beforeLine !== undefined) {
+      lines.push({ kind: "removed", prefix: "- ", text: beforeLine });
+    }
+    if (afterLine !== undefined && lines.length < maxLines) {
+      lines.push({ kind: "added", prefix: "+ ", text: afterLine });
+    }
+  }
+  if (lineCount > maxLines) {
+    lines.push({ kind: "same", prefix: "  ", text: "...diff truncated" });
+  }
+  return lines;
+}
+
+function splitYamlLines(value: string): string[] {
+  return value ? value.replace(/\n$/, "").split("\n") : [];
+}
+
+function searchLocalModel(model: EffectiveModel, query: string, limit: number): SearchResults {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return emptySearchResults;
+  }
+
+  const elements = Object.values(model.elementsBySlug)
+    .flatMap((element): ElementSearchResult[] => {
+      const match = localElementMatch(element, normalized);
+      return match
+        ? [
+            {
+              slug: element.slug,
+              name: element.name,
+              type: element.type,
+              match,
+            },
+          ]
+        : [];
+    })
+    .sort((left, right) => left.slug.localeCompare(right.slug))
+    .slice(0, limit);
+
+  return {
+    query: query.trim(),
+    elements,
+    files: [],
+    symbols: [],
+  };
+}
+
+function localElementMatch(element: ElementNode, normalizedQuery: string): ElementSearchResult["match"] | null {
+  if (element.slug.toLowerCase().includes(normalizedQuery)) {
+    return "slug";
+  }
+  if (element.name.toLowerCase().includes(normalizedQuery)) {
+    return "name";
+  }
+  if (element.description?.toLowerCase().includes(normalizedQuery)) {
+    return "description";
+  }
+  if (element.tech?.toLowerCase().includes(normalizedQuery)) {
+    return "tech";
+  }
+  return null;
+}
+
+function dependencyStateFor(view: DerivedView, activeSlug: string | null): DependencyState {
+  if (!activeSlug) {
+    return {
+      activeSlug: null,
+      connectedNodeIds: new Set(),
+      activeEdgeIds: new Set(),
+    };
+  }
+
+  const connectedNodeIds = new Set([activeSlug]);
+  const activeEdgeIds = new Set<string>();
+  view.edges.forEach((edge) => {
+    if (edge.source === activeSlug || edge.target === activeSlug) {
+      activeEdgeIds.add(edge.id);
+      connectedNodeIds.add(edge.source);
+      connectedNodeIds.add(edge.target);
+    }
+  });
+  return { activeSlug, connectedNodeIds, activeEdgeIds };
+}
+
+function decorateNodes(
+  nodes: C4FlowNode[],
+  selectedSlug: string | null,
+  dependencyState: DependencyState,
+  focusMode: FocusMode,
+): C4FlowNode[] {
+  return nodes.map((node) => {
+    const relationshipState = relationshipStateForNode(node.id, dependencyState, focusMode);
+    return {
+      ...node,
+      selected: node.id === selectedSlug,
+      className: relationshipState === "muted" ? "dependency-muted" : undefined,
+      data: {
+        ...node.data,
+        relationshipState,
+      },
+    };
+  });
+}
+
+function decorateEdges(edges: Edge[], dependencyState: DependencyState, focusMode: FocusMode): Edge[] {
+  return edges.map((edge) => {
+    const relationshipState = relationshipStateForEdge(edge.id, dependencyState, focusMode);
+    return {
+      ...edge,
+      className: [
+        edge.className,
+        relationshipState === "active" ? "dependency-active" : null,
+        relationshipState === "muted" ? "dependency-muted" : null,
+        edge.data?.generated ? "generated-edge" : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      data: {
+        ...edge.data,
+        relationshipState,
+      },
+    };
+  });
+}
+
+function relationshipStateForNode(
+  nodeId: string,
+  dependencyState: DependencyState,
+  focusMode: FocusMode,
+): "active" | "muted" | "neutral" {
+  if (!dependencyState.activeSlug) {
+    return "neutral";
+  }
+  if (dependencyState.connectedNodeIds.has(nodeId)) {
+    return "active";
+  }
+  return focusMode === "connected" ? "muted" : "neutral";
+}
+
+function relationshipStateForEdge(
+  edgeId: string,
+  dependencyState: DependencyState,
+  focusMode: FocusMode,
+): "active" | "muted" | "neutral" {
+  if (!dependencyState.activeSlug) {
+    return "neutral";
+  }
+  if (dependencyState.activeEdgeIds.has(edgeId)) {
+    return "active";
+  }
+  return focusMode === "connected" ? "muted" : "neutral";
+}
+
 function C4Node({ data, selected }: NodeProps) {
   const node = data as C4NodeData;
+  const relationshipState = typeof node.relationshipState === "string" ? node.relationshipState : "neutral";
   return (
-    <div className={selected ? "c4-node selected" : "c4-node"}>
+    <div
+      className={[
+        "c4-node",
+        selected ? "selected" : null,
+        node.generated ? "generated" : null,
+        relationshipState === "active" ? "dependency-active" : null,
+        relationshipState === "muted" ? "dependency-muted" : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <div className="node-heading">
         <span className={`node-icon ${node.elementType}`}>
           <NodeIcon type={node.elementType} external={node.external} />
@@ -874,6 +1415,9 @@ function C4Node({ data, selected }: NodeProps) {
       </div>
       <div className="node-footer">
         {node.tech ? <span>{node.tech}</span> : <span>{node.status}</span>}
+        <span className={node.generated ? "node-provenance generated" : "node-provenance authored"}>
+          {node.generated ? "generated" : "authored"}
+        </span>
         {node.external ? <ExternalLink size={14} aria-hidden="true" /> : <Circle size={10} aria-hidden="true" />}
       </div>
     </div>
@@ -913,6 +1457,19 @@ function currentSystemSlug(model: EffectiveModel, scope: ViewScope): string | nu
   }
   if (scope.level === "component") {
     return model.elementsBySlug[scope.slug]?.systemSlug ?? null;
+  }
+  return null;
+}
+
+function scopeForElement(element: ElementNode): ViewScope | null {
+  if (element.type === "actor" || element.type === "system") {
+    return { level: "context" };
+  }
+  if (element.type === "container" && element.systemSlug) {
+    return { level: "container", slug: element.systemSlug };
+  }
+  if (element.type === "component" && element.containerSlug) {
+    return { level: "component", slug: element.containerSlug };
   }
   return null;
 }

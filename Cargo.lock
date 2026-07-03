@@ -504,6 +504,7 @@ dependencies = [
 name = "c4lens-tauri"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "c4lens-core",
  "rfd 0.15.4",
  "serde",

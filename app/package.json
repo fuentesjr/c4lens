@@ -11,7 +11,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "tauri": "cd ../crates/c4lens-tauri && tauri",
     "tauri:dev": "cd ../crates/c4lens-tauri && tauri dev",
-    "tauri:build": "cd ../crates/c4lens-tauri && tauri build"
+    "tauri:build": "cd ../crates/c4lens-tauri && tauri build",
+    "tauri:build:macos": "cd ../crates/c4lens-tauri && tauri build --target universal-apple-darwin --bundles app,dmg --ci --no-sign"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

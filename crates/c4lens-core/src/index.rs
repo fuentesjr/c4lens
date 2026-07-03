@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     acquire_repo_write_lock, load_effective_model_from_repo_recovering_generated_overlay, CodeRef,
-    CommandError, RepoHandle, ScanSummary, ValidationIssue, ValidationSeverity, ValidationStage,
+    CommandError, ElementNode, ElementSearchMatch, ElementSearchResult, FileSearchMatch,
+    FileSearchResult, RepoHandle, ScanSummary, SearchResults, SourceRange, SymbolSearchResult,
+    ValidationIssue, ValidationSeverity, ValidationStage,
 };
 
 mod rust;
@@ -157,6 +159,184 @@ LIMIT 1
         language,
         snippet,
     }))
+}
+
+pub fn search_repo(
+    repo: &RepoHandle,
+    index_path: Option<PathBuf>,
+    query: &str,
+    limit: usize,
+) -> Result<SearchResults, CommandError> {
+    let query = query.trim().to_string();
+    if query.chars().count() > 256 {
+        return Err(CommandError::new(
+            "search.query_invalid",
+            "Search query must be 256 characters or fewer.",
+        ));
+    }
+
+    if query.is_empty() || limit == 0 {
+        return Ok(SearchResults {
+            query,
+            elements: Vec::new(),
+            files: Vec::new(),
+            symbols: Vec::new(),
+        });
+    }
+
+    let model = load_effective_model_from_repo_recovering_generated_overlay(repo.clone())?;
+    let mut elements = search_elements(model.elements_by_slug.values(), &query);
+    elements.truncate(limit);
+
+    let index_path = index_path.unwrap_or_else(|| default_index_path(repo));
+    if !index_path.is_file() {
+        return Ok(SearchResults {
+            query,
+            elements,
+            files: Vec::new(),
+            symbols: Vec::new(),
+        });
+    }
+
+    let connection = Connection::open(index_path).map_err(sqlite_error)?;
+    migrate_index(&connection)?;
+    Ok(SearchResults {
+        files: search_files(&connection, &repo.id, &query, limit)?,
+        symbols: search_symbols(&connection, &repo.id, &query, limit)?,
+        query,
+        elements,
+    })
+}
+
+fn search_elements<'a>(
+    elements: impl Iterator<Item = &'a ElementNode>,
+    query: &str,
+) -> Vec<ElementSearchResult> {
+    let query = query.to_lowercase();
+    let mut results = elements
+        .filter_map(|element| {
+            let match_field = element_search_match(element, &query)?;
+            Some(ElementSearchResult {
+                slug: element.base.slug.clone(),
+                name: element.base.name.clone(),
+                element_type: element.element_type.clone(),
+                match_field,
+            })
+        })
+        .collect::<Vec<_>>();
+    results.sort_by(|left, right| left.slug.cmp(&right.slug));
+    results
+}
+
+fn element_search_match(element: &ElementNode, query: &str) -> Option<ElementSearchMatch> {
+    if contains_case_insensitive(&element.base.slug, query) {
+        return Some(ElementSearchMatch::Slug);
+    }
+    if contains_case_insensitive(&element.base.name, query) {
+        return Some(ElementSearchMatch::Name);
+    }
+    if element
+        .base
+        .description
+        .as_deref()
+        .is_some_and(|value| contains_case_insensitive(value, query))
+    {
+        return Some(ElementSearchMatch::Description);
+    }
+    if element
+        .base
+        .tech
+        .as_deref()
+        .is_some_and(|value| contains_case_insensitive(value, query))
+    {
+        return Some(ElementSearchMatch::Tech);
+    }
+    None
+}
+
+fn contains_case_insensitive(value: &str, lowercase_query: &str) -> bool {
+    value.to_lowercase().contains(lowercase_query)
+}
+
+fn search_files(
+    connection: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<FileSearchResult>, CommandError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT path, lang
+FROM files
+WHERE repo_id = ?1
+  AND instr(lower(path), lower(?2)) > 0
+ORDER BY path
+LIMIT ?3
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id, query, limit as i64], |row| {
+            Ok(FileSearchResult {
+                path: row.get(0)?,
+                language: row.get(1)?,
+                match_field: FileSearchMatch::Path,
+            })
+        })
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+fn search_symbols(
+    connection: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SymbolSearchResult>, CommandError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT files.path,
+       symbols.name,
+       symbols.qualified_name,
+       symbols.kind,
+       symbols.start_line,
+       symbols.start_column,
+       symbols.end_line,
+       symbols.end_column
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+  AND (
+    instr(lower(symbols.name), lower(?2)) > 0
+    OR (
+      symbols.qualified_name IS NOT NULL
+      AND instr(lower(symbols.qualified_name), lower(?2)) > 0
+    )
+  )
+ORDER BY files.path, symbols.start_line, symbols.start_column, symbols.name
+LIMIT ?3
+"#,
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![repo_id, query, limit as i64], |row| {
+            Ok(SymbolSearchResult {
+                path: row.get(0)?,
+                name: row.get(1)?,
+                qualified_name: row.get(2)?,
+                kind: row.get(3)?,
+                range: SourceRange {
+                    start_line: row.get::<_, u32>(4)?,
+                    start_column: row.get::<_, u32>(5)?,
+                    end_line: row.get::<_, u32>(6)?,
+                    end_column: row.get::<_, u32>(7)?,
+                },
+            })
+        })
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
 }
 
 #[derive(Debug, Clone)]
@@ -1206,7 +1386,7 @@ mod tests {
 
     use crate::{
         acquire_repo_write_lock, get_element_code, list_internal_crate_import_edges,
-        repo_handle_from_path, scan_repo, ScanOptions,
+        repo_handle_from_path, scan_repo, search_repo, ScanOptions,
     };
 
     use super::migrate_index;
@@ -1422,6 +1602,86 @@ ORDER BY lower(symbols.name)
         assert_eq!(file_count, 2);
 
         cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn search_repo_returns_elements_files_and_symbols_deterministically() {
+        let root = fresh_test_dir("search-repo");
+        let index_root = fresh_test_dir("search-repo-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(
+            &root,
+            "c4/model.yml",
+            r#"
+name: Search Repo
+systems:
+  billing:
+    name: Billing Platform
+    description: Customer invoicing and billing workflows.
+    tech: Rust
+    code: src/billing.rs
+    containers:
+      api:
+        name: API Server
+        kind: service
+        code: src/main.rs
+        components:
+          invoice_worker:
+            name: Invoice Worker
+            description: Handles billing invoices.
+            code: src/billing.rs
+"#,
+        );
+        write_file(&root, "src/main.rs", "fn main() {}\n");
+        write_file(
+            &root,
+            "src/billing.rs",
+            "pub struct BillingWorker;\npub fn bill_customer() {}\n",
+        );
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        let results =
+            search_repo(&repo, Some(db_path.clone()), "billing", 20).expect("search repo");
+
+        let element_slugs = results
+            .elements
+            .iter()
+            .map(|result| result.slug.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(element_slugs, ["billing", "invoice_worker"]);
+        assert_eq!(results.files[0].path, "src/billing.rs");
+        assert_eq!(results.symbols[0].name, "BillingWorker");
+        assert_eq!(results.symbols[0].range.start_line, 1);
+
+        let empty_results = search_repo(&repo, Some(db_path), "   ", 20).expect("empty search");
+        assert!(empty_results.elements.is_empty());
+        assert!(empty_results.files.is_empty());
+        assert!(empty_results.symbols.is_empty());
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn search_repo_rejects_queries_over_256_characters() {
+        let root = fresh_test_dir("search-too-long");
+        write_file(&root, "c4/model.yml", "name: Search Repo\n");
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+
+        let error = search_repo(&repo, None, &"x".repeat(257), 20).expect_err("query too long");
+
+        assert_eq!(error.code, "search.query_invalid");
+
         cleanup(root);
     }
 

@@ -32,7 +32,7 @@ export function useGenerationCandidate({
 
     setIsGenerating(true);
     setCandidate(null);
-    setStatus("Generating model");
+    setStatus("Scanning and generating model");
     const generationRepoId = activeRepoIdRef.current;
     try {
       const nextCandidate = await generateModel({ scanFirst: true });
