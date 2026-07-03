@@ -47,6 +47,10 @@ listed here are planned or deferred capabilities, not regressions.
 | Cross-language import relationship generation | Implemented | Generated component relationships now consume resolved internal imports from the full MVP language index, not only Rust crate imports. |
 | Multi-language generation regression coverage | Implemented | CLI generation tests cover import-derived relationships for TypeScript, Python, Ruby, Go, and Rust. |
 | Multi-language MVP smoke fixture | Implemented | `npm run smoke:mvp` now scans a mixed-language repo and checks generated import relationships across the MVP parser set. |
+| PNG export workflow coverage | Implemented | Renderer E2E coverage now exercises PNG export payload generation and desktop IPC handoff. |
+| macOS artifact verification | Implemented | `npm run package:verify` validates the unsigned app bundle, DMG, plist, executable, and universal architectures. |
+| Release smoke command | Implemented | `npm run smoke:release` runs the quality gate, MVP smoke, unsigned macOS build, and artifact verification on macOS. |
+| macOS packaging CI | Implemented | CI builds and uploads unsigned universal macOS artifacts on pushes to `main` and manual workflow dispatches. |
 
 ## Later Backlog
 

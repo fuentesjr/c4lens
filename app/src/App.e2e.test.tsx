@@ -317,6 +317,57 @@ function setInputValue(input: HTMLInputElement, value: string) {
   setter?.call(input, value);
 }
 
+function stubPngExportBrowserApis(): () => void {
+  const createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+  const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+  const getContextSpy = vi
+    .spyOn(HTMLCanvasElement.prototype, "getContext")
+    .mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+  const toDataUrlSpy = vi
+    .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+    .mockReturnValue("data:image/png;base64,cG5nCg==");
+
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => "blob:c4lens-export"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
+
+  class StubImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+
+    set src(_value: string) {
+      queueMicrotask(() => {
+        this.onload?.();
+      });
+    }
+  }
+
+  vi.stubGlobal("Image", StubImage as unknown as typeof Image);
+
+  return () => {
+    getContextSpy.mockRestore();
+    toDataUrlSpy.mockRestore();
+    if (createObjectUrlDescriptor) {
+      Object.defineProperty(URL, "createObjectURL", createObjectUrlDescriptor);
+    } else {
+      delete (URL as unknown as Record<string, unknown>).createObjectURL;
+    }
+    if (revokeObjectUrlDescriptor) {
+      Object.defineProperty(URL, "revokeObjectURL", revokeObjectUrlDescriptor);
+    } else {
+      delete (URL as unknown as Record<string, unknown>).revokeObjectURL;
+    }
+    vi.unstubAllGlobals();
+  };
+}
+
 describe("App drill-down renderer behavior", () => {
   afterEach(() => {
     resetDomAndRoute();
@@ -1390,6 +1441,37 @@ describe("App scan behavior", () => {
     expect(container.querySelector(".statusbar")?.textContent).toContain("Exported SVG to /tmp/current-view.svg");
 
     cleanup();
+  });
+
+  it("exports the current view as PNG", async () => {
+    const restorePngApis = stubPngExportBrowserApis();
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.exportView.mockResolvedValueOnce({ savedPath: "/tmp/current-view.png" });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const pngButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "PNG",
+    );
+    expect(pngButton).not.toBeNull();
+
+    await act(async () => {
+      pngButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await flushLayout();
+
+    expect(ipcMocks.exportView).toHaveBeenCalledWith({
+      format: "png",
+      scope: { level: "context" },
+      pngBase64: "cG5nCg==",
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Exported PNG to /tmp/current-view.png");
+
+    cleanup();
+    restorePngApis();
   });
 
   it("surfaces generation failures without unloading the current canvas", async () => {

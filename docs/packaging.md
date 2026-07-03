@@ -17,13 +17,32 @@ Build unsigned internal development artifacts:
 npm run tauri:build:macos
 ```
 
-This runs Tauri with:
+This builds the unsigned Tauri app bundle and then creates a simple DMG with
+`hdiutil`:
 
 ```sh
-tauri build --target universal-apple-darwin --bundles app,dmg --ci --no-sign
+tauri build --target universal-apple-darwin --bundles app --ci --no-sign
+hdiutil create -srcfolder <staging-dir> -format UDZO c4lens_<version>_universal.dmg
 ```
 
-Artifacts are written under `crates/c4lens-tauri/target/universal-apple-darwin/release/bundle/`.
+Artifacts are written under `target/universal-apple-darwin/release/bundle/`.
+
+Verify that the app bundle, DMG, `Info.plist`, executable, and universal
+architectures are present:
+
+```sh
+npm run package:verify
+```
+
+Run the full local release smoke on macOS:
+
+```sh
+npm run smoke:release
+```
+
+This runs the quality gate, MVP smoke, unsigned universal macOS build, and
+artifact verification. CI also runs the unsigned macOS packaging job on pushes
+to `main` and manual workflow dispatches.
 
 ## Signing
 

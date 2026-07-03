@@ -8,12 +8,14 @@
     "build": "npm --workspace app run build",
     "check:all": "bash scripts/check.sh",
     "check": "npm --workspace app run check",
+    "package:verify": "bash scripts/verify_macos_artifacts.sh",
+    "smoke:release": "bash scripts/smoke_release.sh",
     "smoke:mvp": "bash scripts/smoke_mvp.sh",
     "test": "npm --workspace app run test",
     "preview": "npm --workspace app run preview",
     "tauri": "npm --workspace app run tauri",
     "tauri:dev": "npm --workspace app run tauri:dev",
     "tauri:build": "npm --workspace app run tauri:build",
-    "tauri:build:macos": "npm --workspace app run tauri -- build --target universal-apple-darwin --bundles app,dmg --ci --no-sign"
+    "tauri:build:macos": "bash scripts/build_macos_mvp.sh"
   }
 }

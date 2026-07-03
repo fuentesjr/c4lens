@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -35,3 +36,39 @@ jobs:
 
       - name: Run quality gate
         run: npm run check:all
+
+  package-macos:
+    name: Package macOS
+    runs-on: macos-latest
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build unsigned universal macOS artifacts
+        run: npm run tauri:build:macos
+
+      - name: Verify macOS artifacts
+        run: npm run package:verify
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4lens-macos-universal
+          path: target/universal-apple-darwin/release/bundle/**/*
