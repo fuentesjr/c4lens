@@ -1057,7 +1057,18 @@ describe("App model event behavior", () => {
     expect(container.querySelector(".statusbar")?.textContent).toContain("Model validation failed");
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("parse.invalid_yaml");
     expect(container.querySelector("aside.detail-panel")?.textContent).toContain("Failed to parse c4/model.yml.");
-    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("c4/model.yml");
+    expect(container.querySelector("aside.detail-panel")?.textContent).toContain("c4/model.yml:4:7");
+
+    const openIssueButton = getDetailAction(container, "Open issue");
+    expect(openIssueButton).not.toBeNull();
+
+    await act(async () => {
+      openIssueButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(ipcMocks.openInEditor).toHaveBeenCalledWith("c4/model.yml", 4, 7);
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened c4/model.yml:4:7");
 
     cleanup();
   });
@@ -1411,6 +1422,122 @@ describe("App scan behavior", () => {
 
     expect(window.location.hash).toBe("#/container/api_server/component/billing_component");
     expect(container.querySelector(".detail-panel")?.textContent).toContain("Billing Component");
+
+    cleanup();
+  });
+
+  it("supports keyboard navigation for search results", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.searchRepository.mockResolvedValueOnce({
+      query: "billing",
+      elements: [
+        {
+          slug: "billing_component",
+          name: "Billing Component",
+          type: "component",
+          match: "name",
+        },
+      ],
+      files: [
+        {
+          path: "src/billing.ts",
+          language: "typescript",
+          match: "path",
+        },
+      ],
+      symbols: [
+        {
+          path: "src/billing.ts",
+          name: "BillingService",
+          qualifiedName: "BillingService",
+          kind: "class",
+          range: {
+            startLine: 12,
+            startColumn: 1,
+            endLine: 28,
+            endColumn: 2,
+          },
+        },
+      ],
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const searchInput = container.querySelector<HTMLInputElement>(".search-box input");
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      searchInput!.focus();
+      setInputValue(searchInput!, "billing");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".search-results button.active")?.textContent).toContain("Billing Component");
+
+    await act(async () => {
+      searchInput!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".search-results button.active")?.textContent).toContain("src/billing.ts");
+
+    await act(async () => {
+      searchInput!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    await flushLayout();
+
+    expect(ipcMocks.openInEditor).toHaveBeenCalledWith("src/billing.ts", undefined, undefined);
+    expect(container.querySelector(".search-results")).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Opened src/billing.ts");
+
+    cleanup();
+  });
+
+  it("closes search results with Escape", async () => {
+    ipcMocks.isTauriDesktop.mockReturnValue(true);
+    ipcMocks.fetchActiveModel.mockResolvedValueOnce(null);
+    ipcMocks.searchRepository.mockResolvedValueOnce({
+      query: "billing",
+      elements: [
+        {
+          slug: "billing_component",
+          name: "Billing Component",
+          type: "component",
+          match: "name",
+        },
+      ],
+      files: [],
+      symbols: [],
+    });
+
+    const { container, cleanup } = mountApp();
+    await flushLayout();
+
+    const searchInput = container.querySelector<HTMLInputElement>(".search-box input");
+    expect(searchInput).not.toBeNull();
+
+    await act(async () => {
+      searchInput!.focus();
+      setInputValue(searchInput!, "billing");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".search-results")).not.toBeNull();
+
+    await act(async () => {
+      searchInput!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flushLayout();
+
+    expect(container.querySelector(".search-results")).toBeNull();
+    expect(searchInput!.value).toBe("");
 
     cleanup();
   });
@@ -1839,6 +1966,8 @@ function validationFailureReport(code: string, message: string): ValidationRepor
         code,
         message,
         path: "c4/model.yml",
+        line: 4,
+        column: 7,
       },
     ],
   };

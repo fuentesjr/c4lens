@@ -6,6 +6,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 bundle_root="${1:-target/universal-apple-darwin/release/bundle}"
 product_name="$(node -p 'require("./crates/c4lens-tauri/tauri.conf.json").productName')"
 version="$(node -p 'require("./crates/c4lens-tauri/tauri.conf.json").version')"
+identifier="$(node -p 'require("./crates/c4lens-tauri/tauri.conf.json").identifier')"
 expected_dmg_path="$bundle_root/dmg/${product_name}_${version}_universal.dmg"
 
 if [[ ! -d "$bundle_root" ]]; then
@@ -38,14 +39,40 @@ if [[ ! -s "$dmg_path" ]]; then
 fi
 
 info_plist="$app_path/Contents/Info.plist"
-app_executable="$(
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_plist" 2>/dev/null \
-    || basename "${app_path%.app}"
-)"
-app_binary="$app_path/Contents/MacOS/$app_executable"
 
 if [[ ! -f "$info_plist" ]]; then
   printf 'Info.plist not found: %s\n' "$info_plist" >&2
+  exit 1
+fi
+
+plist_value() {
+  /usr/libexec/PlistBuddy -c "Print :$1" "$info_plist"
+}
+
+app_name="$(plist_value CFBundleName)"
+app_identifier="$(plist_value CFBundleIdentifier)"
+app_short_version="$(plist_value CFBundleShortVersionString)"
+app_bundle_version="$(plist_value CFBundleVersion)"
+app_executable="$(plist_value CFBundleExecutable)"
+app_binary="$app_path/Contents/MacOS/$app_executable"
+
+if [[ "$app_name" != "$product_name" ]]; then
+  printf 'Unexpected CFBundleName: expected %s, got %s\n' "$product_name" "$app_name" >&2
+  exit 1
+fi
+
+if [[ "$app_identifier" != "$identifier" ]]; then
+  printf 'Unexpected CFBundleIdentifier: expected %s, got %s\n' "$identifier" "$app_identifier" >&2
+  exit 1
+fi
+
+if [[ "$app_short_version" != "$version" ]]; then
+  printf 'Unexpected CFBundleShortVersionString: expected %s, got %s\n' "$version" "$app_short_version" >&2
+  exit 1
+fi
+
+if [[ "$app_bundle_version" != "$version" ]]; then
+  printf 'Unexpected CFBundleVersion: expected %s, got %s\n' "$version" "$app_bundle_version" >&2
   exit 1
 fi
 
@@ -68,6 +95,10 @@ if command -v lipo >/dev/null 2>&1; then
     *" arm64 "* ) ;;
     * ) printf 'App executable is missing arm64 arch: %s\n' "$archs" >&2; exit 1 ;;
   esac
+fi
+
+if command -v hdiutil >/dev/null 2>&1; then
+  hdiutil verify "$dmg_path" >/dev/null 2>&1
 fi
 
 printf 'Verified macOS artifacts:\n'

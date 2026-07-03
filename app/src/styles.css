@@ -183,7 +183,8 @@ input {
 }
 
 .search-results button:hover,
-.search-results button:focus {
+.search-results button:focus,
+.search-results button.active {
   border-color: #8f3f71;
   outline: 0;
 }
@@ -813,6 +814,23 @@ input {
   color: #a15c00;
 }
 
+.validation-item button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: max-content;
+  min-height: 26px;
+  margin-top: 2px;
+  padding: 4px 8px;
+  border: 1px solid #d4922c;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #7a4300;
+  cursor: pointer;
+  font: inherit;
+}
+
 .muted {
   color: #687483;
   font-size: 13px;
@@ -942,6 +960,7 @@ input {
 
 :root[data-theme="dark"] .search-results button:hover,
 :root[data-theme="dark"] .search-results button:focus,
+:root[data-theme="dark"] .search-results button.active,
 :root[data-theme="dark"] .scope-button.active,
 :root[data-theme="dark"] .c4-node.selected {
   border-color: #c778a5;
@@ -1033,6 +1052,12 @@ input {
   border-color: #6d4e24;
   background: #2c2518;
   color: #dbe5ef;
+}
+
+:root[data-theme="dark"] .validation-item button {
+  border-color: #93672c;
+  background: #1d2a36;
+  color: #f2b75f;
 }
 
 :root[data-theme="dark"] .route-notice svg,

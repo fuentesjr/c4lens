@@ -34,6 +34,8 @@ listed here are planned or deferred capabilities, not regressions.
 | Source change re-indexing | Implemented | The watcher detects non-control source edits, runs an incremental scan, and emits `index-updated`. |
 | Schema drift repair | Implemented | Repos with stale `c4/schema.json` get a validation warning and a desktop repair action that refreshes the bundled schema. |
 | GUI smoke coverage | Implemented | `npm run smoke:mvp` now includes the renderer E2E workflow tests in addition to the CLI smoke path. |
+| Keyboardable global search | Implemented | Search results now support ArrowUp/ArrowDown, Enter, Escape, active-result styling, and combobox/listbox ARIA state. |
+| Validation issue jump-to-file | Implemented | Validation cards show path, line, and column details when available and can open the issue location from the desktop shell. |
 
 ## MVP Release Readiness
 
@@ -51,6 +53,7 @@ listed here are planned or deferred capabilities, not regressions.
 | macOS artifact verification | Implemented | `npm run package:verify` validates the unsigned app bundle, DMG, plist, executable, and universal architectures. |
 | Release smoke command | Implemented | `npm run smoke:release` runs the quality gate, MVP smoke, unsigned macOS build, and artifact verification on macOS. |
 | macOS packaging CI | Implemented | CI builds and uploads unsigned universal macOS artifacts on pushes to `main` and manual workflow dispatches. |
+| Packaged-app release metadata smoke | Implemented | `npm run package:verify` now checks bundle name, identifier, version metadata, universal executable architecture, and DMG checksum validity. |
 
 ## Later Backlog
 

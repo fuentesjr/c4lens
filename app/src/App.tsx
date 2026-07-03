@@ -1,4 +1,13 @@
-import { Children, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Children,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   Background,
   Controls,
@@ -721,6 +730,24 @@ export function App() {
     }
   }, []);
 
+  const openValidationIssue = useCallback(async (issue: ValidationIssue) => {
+    if (!issue.path) {
+      return;
+    }
+
+    if (!isTauriDesktop()) {
+      setStatus(validationIssueLocation(issue));
+      return;
+    }
+
+    try {
+      await openInEditor(issue.path, issue.line ?? undefined, issue.column ?? undefined);
+      setStatus(`Opened ${validationIssueLocation(issue)}`);
+    } catch (error) {
+      setStatus(errorStatus(error, "Failed to open validation issue"));
+    }
+  }, []);
+
   const focusSearchElement = useCallback(
     (slug: string) => {
       const element = model.elementsBySlug[slug];
@@ -946,6 +973,7 @@ export function App() {
           onOpenSymbol={openSymbolInEditor}
           onRepairSchema={runRepairSchema}
           onApplyGeneration={applyGenerationCandidate}
+          onOpenValidationIssue={openValidationIssue}
         />
       </main>
 
@@ -1034,6 +1062,7 @@ function DetailPanel({
   onOpenSymbol,
   onRepairSchema,
   onApplyGeneration,
+  onOpenValidationIssue,
 }: {
   selectedElement: ElementNode | null;
   sourcePreview: SourcePreviewState;
@@ -1052,6 +1081,7 @@ function DetailPanel({
   onOpenSymbol: (symbol: SymbolSearchResult) => void;
   onRepairSchema: () => void;
   onApplyGeneration: () => void;
+  onOpenValidationIssue: (issue: ValidationIssue) => void;
 }) {
   const relatedEdges = selectedElement
     ? view.edges.filter((edge) => edge.source === selectedElement.slug || edge.target === selectedElement.slug)
@@ -1143,7 +1173,11 @@ function DetailPanel({
               <h3>Validation</h3>
               <div className="validation-list">
                 {errorIssues.map((issue, index) => (
-                  <ValidationIssueCard issue={issue} key={`${issue.code}-${issue.path ?? "model"}-${index}`} />
+                  <ValidationIssueCard
+                    issue={issue}
+                    key={`${issue.code}-${issue.path ?? "model"}-${index}`}
+                    onOpenIssue={onOpenValidationIssue}
+                  />
                 ))}
               </div>
             </>
@@ -1159,7 +1193,11 @@ function DetailPanel({
               ) : null}
               <div className="validation-list">
                 {warningIssues.map((issue, index) => (
-                  <ValidationIssueCard issue={issue} key={`${issue.code}-${issue.path ?? "model"}-${index}`} />
+                  <ValidationIssueCard
+                    issue={issue}
+                    key={`${issue.code}-${issue.path ?? "model"}-${index}`}
+                    onOpenIssue={onOpenValidationIssue}
+                  />
                 ))}
               </div>
             </>
@@ -1315,13 +1353,65 @@ function SearchBox({
   onSymbolSelect: (result: SymbolSearchResult) => void;
 }) {
   const trimmedQuery = query.trim();
-  const resultCount = results.elements.length + results.files.length + results.symbols.length;
+  const resultItems = useMemo(() => searchResultItems(results), [results]);
+  const resultCount = resultItems.length;
   const isOpen = isFocused && Boolean(trimmedQuery);
+  const [activeIndex, setActiveIndex] = useState(0);
 
   const closeAfter = (action: () => void) => {
     action();
     onQueryChange("");
     onFocusChange(false);
+  };
+
+  const activateResult = (item: SearchResultItem) => {
+    if (item.kind === "element") {
+      closeAfter(() => onElementSelect(item.result.slug));
+      return;
+    }
+    if (item.kind === "file") {
+      closeAfter(() => onFileSelect(item.result));
+      return;
+    }
+    closeAfter(() => onSymbolSelect(item.result));
+  };
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [results, trimmedQuery]);
+
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (!isOpen) {
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onQueryChange("");
+      onFocusChange(false);
+      return;
+    }
+
+    if (resultItems.length === 0) {
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => (current + 1) % resultItems.length);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => (current - 1 + resultItems.length) % resultItems.length);
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      activateResult(resultItems[Math.min(activeIndex, resultItems.length - 1)]);
+    }
   };
 
   return (
@@ -1334,39 +1424,85 @@ function SearchBox({
           onChange={(event) => onQueryChange(event.target.value)}
           onFocus={() => onFocusChange(true)}
           onBlur={() => onFocusChange(false)}
+          onKeyDown={handleSearchKeyDown}
+          aria-activedescendant={isOpen && resultItems[activeIndex] ? resultItems[activeIndex].id : undefined}
+          aria-controls="search-results"
+          aria-expanded={isOpen}
+          role="combobox"
         />
       </label>
       {isOpen ? (
-        <div className="search-results" role="listbox" onMouseDown={(event) => event.preventDefault()}>
+        <div
+          id="search-results"
+          className="search-results"
+          role="listbox"
+          onMouseDown={(event) => event.preventDefault()}
+        >
           {isSearching ? <div className="search-empty">Searching</div> : null}
           {!isSearching && resultCount === 0 ? <div className="search-empty">No results</div> : null}
           <SearchResultGroup title="Elements">
-            {results.elements.map((result) => (
-              <button key={result.slug} type="button" onClick={() => closeAfter(() => onElementSelect(result.slug))}>
-                <strong>{result.name}</strong>
-                <span>{result.type} - {result.match}</span>
-              </button>
-            ))}
+            {results.elements.map((result) => {
+              const resultId = searchResultId("element", result.slug);
+              const isActive = resultItems[activeIndex]?.id === resultId;
+              return (
+                <button
+                  id={resultId}
+                  key={result.slug}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  className={isActive ? "active" : ""}
+                  onMouseEnter={() => setActiveIndex(indexOfSearchResult(resultItems, "element", result.slug))}
+                  onClick={() => closeAfter(() => onElementSelect(result.slug))}
+                >
+                  <strong>{result.name}</strong>
+                  <span>{result.type} - {result.match}</span>
+                </button>
+              );
+            })}
           </SearchResultGroup>
           <SearchResultGroup title="Files">
-            {results.files.map((result) => (
-              <button key={result.path} type="button" onClick={() => closeAfter(() => onFileSelect(result))}>
-                <strong>{result.path}</strong>
-                <span>{result.language ?? "file"}</span>
-              </button>
-            ))}
+            {results.files.map((result) => {
+              const resultId = searchResultId("file", result.path);
+              const isActive = resultItems[activeIndex]?.id === resultId;
+              return (
+                <button
+                  id={resultId}
+                  key={result.path}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  className={isActive ? "active" : ""}
+                  onMouseEnter={() => setActiveIndex(indexOfSearchResult(resultItems, "file", result.path))}
+                  onClick={() => closeAfter(() => onFileSelect(result))}
+                >
+                  <strong>{result.path}</strong>
+                  <span>{result.language ?? "file"}</span>
+                </button>
+              );
+            })}
           </SearchResultGroup>
           <SearchResultGroup title="Symbols">
-            {results.symbols.map((result) => (
-              <button
-                key={`${result.path}:${result.range.startLine}:${result.name}`}
-                type="button"
-                onClick={() => closeAfter(() => onSymbolSelect(result))}
-              >
-                <strong>{result.qualifiedName ?? result.name}</strong>
-                <span>{result.path}:{result.range.startLine}</span>
-              </button>
-            ))}
+            {results.symbols.map((result) => {
+              const resultKey = searchResultSymbolKey(result);
+              const resultId = searchResultId("symbol", resultKey);
+              const isActive = resultItems[activeIndex]?.id === resultId;
+              return (
+                <button
+                  id={resultId}
+                  key={resultKey}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  className={isActive ? "active" : ""}
+                  onMouseEnter={() => setActiveIndex(indexOfSearchResult(resultItems, "symbol", resultKey))}
+                  onClick={() => closeAfter(() => onSymbolSelect(result))}
+                >
+                  <strong>{result.qualifiedName ?? result.name}</strong>
+                  <span>{result.path}:{result.range.startLine}</span>
+                </button>
+              );
+            })}
           </SearchResultGroup>
         </div>
       ) : null}
@@ -1388,14 +1524,79 @@ function SearchResultGroup({ title, children }: { title: string; children: React
   );
 }
 
-function ValidationIssueCard({ issue }: { issue: ValidationIssue }) {
+type SearchResultItem =
+  | { id: string; kind: "element"; result: ElementSearchResult }
+  | { id: string; kind: "file"; result: FileSearchResult }
+  | { id: string; kind: "symbol"; result: SymbolSearchResult };
+
+function searchResultItems(results: SearchResults): SearchResultItem[] {
+  return [
+    ...results.elements.map((result) => ({
+      id: searchResultId("element", result.slug),
+      kind: "element" as const,
+      result,
+    })),
+    ...results.files.map((result) => ({
+      id: searchResultId("file", result.path),
+      kind: "file" as const,
+      result,
+    })),
+    ...results.symbols.map((result) => ({
+      id: searchResultId("symbol", searchResultSymbolKey(result)),
+      kind: "symbol" as const,
+      result,
+    })),
+  ];
+}
+
+function searchResultSymbolKey(result: SymbolSearchResult): string {
+  return `${result.path}:${result.range.startLine}:${result.name}`;
+}
+
+function searchResultId(kind: SearchResultItem["kind"], key: string): string {
+  return `search-result-${kind}-${key.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+}
+
+function indexOfSearchResult(items: SearchResultItem[], kind: SearchResultItem["kind"], key: string): number {
+  const index = items.findIndex((item) => item.id === searchResultId(kind, key));
+  return index === -1 ? 0 : index;
+}
+
+function ValidationIssueCard({
+  issue,
+  onOpenIssue,
+}: {
+  issue: ValidationIssue;
+  onOpenIssue: (issue: ValidationIssue) => void;
+}) {
+  const location = validationIssueLocation(issue);
+
   return (
     <div className="validation-item">
       <strong>{issue.code}</strong>
       <span>{issue.message}</span>
-      {issue.path ? <span>{issue.path}</span> : null}
+      {location ? <span>{location}</span> : null}
+      {issue.path ? (
+        <button type="button" onClick={() => onOpenIssue(issue)}>
+          <ExternalLink size={12} aria-hidden="true" />
+          <span>Open issue</span>
+        </button>
+      ) : null}
     </div>
   );
+}
+
+function validationIssueLocation(issue: ValidationIssue): string {
+  if (!issue.path) {
+    return "";
+  }
+  if (issue.line && issue.column) {
+    return `${issue.path}:${issue.line}:${issue.column}`;
+  }
+  if (issue.line) {
+    return `${issue.path}:${issue.line}`;
+  }
+  return issue.path;
 }
 
 function RouteIssueNotice({ issue }: { issue: RouteIssue }) {
