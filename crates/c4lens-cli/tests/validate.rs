@@ -13,7 +13,7 @@ fn validate_succeeds_for_valid_authored_model() {
     let repo = fresh_test_dir("valid-authored");
     write_model(&repo, "name: Valid\n");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--repo"])
         .arg(&repo)
@@ -30,7 +30,7 @@ fn validate_json_outputs_validation_report_for_valid_model() {
     let repo = fresh_test_dir("valid-json");
     write_model(&repo, "name: Json Valid\n");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -58,7 +58,7 @@ systems:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -102,7 +102,7 @@ systems:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -123,7 +123,7 @@ fn validate_json_fails_when_generated_overlay_is_invalid() {
     write_model(&repo, "name: Valid Authored\n");
     write_generated_model(&repo, "name: [unterminated\n");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -149,7 +149,7 @@ fn validate_fails_when_authored_model_is_missing() {
     let repo = fresh_test_dir("missing-model");
     fs::create_dir(repo.join("c4")).expect("create c4 dir");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--repo"])
         .arg(&repo)
@@ -165,7 +165,7 @@ fn validate_fails_when_authored_yaml_is_invalid() {
     let repo = fresh_test_dir("invalid-yaml");
     write_model(&repo, "name: [unterminated\n");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--repo"])
         .arg(&repo)
@@ -181,7 +181,7 @@ fn validate_json_outputs_validation_report_for_invalid_yaml() {
     let repo = fresh_test_dir("invalid-json");
     write_model(&repo, "name: [unterminated\n");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -202,7 +202,7 @@ fn validate_json_outputs_validation_report_for_missing_model() {
     let repo = fresh_test_dir("missing-json");
     fs::create_dir(repo.join("c4")).expect("create c4 dir");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -229,7 +229,7 @@ unexpected: true
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -267,7 +267,7 @@ relationships:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -301,7 +301,7 @@ relationships:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -338,7 +338,7 @@ relationships:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -372,7 +372,7 @@ systems:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -405,7 +405,7 @@ systems:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -452,7 +452,7 @@ relationships:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)
@@ -490,7 +490,7 @@ systems:
 "#,
     );
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["validate", "--json", "--repo"])
         .arg(&repo)

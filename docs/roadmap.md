@@ -35,6 +35,16 @@ listed here are planned or deferred capabilities, not regressions.
 | Schema drift repair | Implemented | Repos with stale `c4/schema.json` get a validation warning and a desktop repair action that refreshes the bundled schema. |
 | GUI smoke coverage | Implemented | `npm run smoke:mvp` now includes the renderer E2E workflow tests in addition to the CLI smoke path. |
 
+## MVP Release Readiness
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| TypeScript/JavaScript scanner coverage | Implemented | The scanner extracts best-effort classes, interfaces, enums, functions, constants, and import/require edges for JS/TS files. |
+| Python scanner coverage | Implemented | The scanner extracts best-effort classes, functions, methods, constants, and import/from edges for Python files. |
+| Ruby scanner coverage | Implemented | The scanner extracts best-effort modules, classes, methods, constants, and require/require_relative edges for Ruby files. |
+| Go scanner coverage | Implemented | The scanner extracts best-effort structs, interfaces, functions, methods, constants, and import edges with `go.mod` module-prefix resolution. |
+| CLI binary contract | Implemented | The CLI crate now builds the MVP `c4lens` executable name and smoke/tests invoke that binary. |
+
 ## Later Backlog
 
 | Item | Status | Notes |

@@ -40,7 +40,7 @@ pub struct Thing;
 RS
 
 run_rust cargo build -p c4lens-cli
-cli="./target/debug/c4lens-cli"
+cli="./target/debug/c4lens"
 
 run_cli() {
   HOME="$home" C4LENS_INDEX_DIR="$index_dir" "$cli" "$@"

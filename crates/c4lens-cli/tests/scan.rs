@@ -23,7 +23,7 @@ systems:
     write_file(&repo, "src/lib.rs", "pub fn run() {}\n");
     let index_dir = fresh_test_dir("scan-json-files-index");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["scan", "--json", "--repo"])
         .arg(&repo)
@@ -58,7 +58,7 @@ fn scan_json_reports_zero_changed_files_on_unchanged_rescan() {
     write_file(&repo, "src/main.rs", "fn main() {}\n");
     let index_dir = fresh_test_dir("scan-json-unchanged-index");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["scan", "--json", "--repo"])
         .arg(&repo)
@@ -66,7 +66,7 @@ fn scan_json_reports_zero_changed_files_on_unchanged_rescan() {
         .assert()
         .success();
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["scan", "--json", "--repo"])
         .arg(&repo)
@@ -90,7 +90,7 @@ fn scan_reports_write_locked_when_writer_is_active() {
     let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
         .expect("lock held for test");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["scan", "--json", "--repo"])
         .arg(&repo)
@@ -111,7 +111,7 @@ fn scan_json_reports_scanner_limit_warnings() {
     write_file_bytes(&repo, "src/binary.rs", b"fn binary()\0{}\n");
     let index_dir = fresh_test_dir("scan-json-limit-warnings-index");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["scan", "--json", "--repo"])
         .arg(&repo)

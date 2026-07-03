@@ -12,7 +12,7 @@ use support::{cleanup, fresh_test_dir};
 fn generate_does_not_write_without_write_flag() {
     let repo = fresh_test_dir("generate-non-write");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--repo"])
         .arg(&repo)
@@ -34,7 +34,7 @@ fn generate_does_not_write_without_write_flag() {
 fn generate_write_creates_generated_overlay_without_model_yaml() {
     let repo = fresh_test_dir("generate-write");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
@@ -76,7 +76,7 @@ fn generate_write_preserves_existing_schema_json() {
     let existing_schema = "{\"title\": \"pre-existing\"}\n";
     fs::write(&schema_path, existing_schema).expect("write schema");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
@@ -116,7 +116,7 @@ relationships:
     let generated_path = repo.join("c4/model.generated.yml");
     fs::write(&generated_path, old_overlay).expect("write old generated overlay");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -145,7 +145,7 @@ fn generate_write_validates_candidate_without_reading_existing_overlay_contents(
         .expect("write invalid generated overlay");
     fs::write(repo.join("requirements.txt"), "flask==3.0\n").expect("write requirements");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -173,7 +173,7 @@ fn generate_write_rejects_symlinked_schema_json_without_writing_overlay() {
     std::os::unix::fs::symlink(&outside_target, repo.join("c4/schema.json"))
         .expect("symlink schema");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -194,14 +194,14 @@ fn generate_write_rejects_symlinked_schema_json_without_writing_overlay() {
 #[test]
 fn generate_check_reports_drift_and_match() {
     let repo = fresh_test_dir("generate-check");
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
         .assert()
         .success();
 
-    let match_report = Command::cargo_bin("c4lens-cli")
+    let match_report = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--check", "--json", "--repo"])
         .arg(&repo)
@@ -214,7 +214,7 @@ fn generate_check_reports_drift_and_match() {
     let generated_path = repo.join("c4/model.generated.yml");
     fs::write(&generated_path, b"# stale generated model\n").expect("stale model");
 
-    let drift_assert = Command::cargo_bin("c4lens-cli")
+    let drift_assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--check", "--json", "--repo"])
         .arg(&repo)
@@ -234,7 +234,7 @@ fn generate_check_reports_drift_and_match() {
 #[test]
 fn generate_json_outputs_yaml() {
     let repo = fresh_test_dir("generate-json");
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -264,7 +264,7 @@ fn generate_with_root_cargo_manifest_returns_generated_system_and_container() {
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -298,7 +298,7 @@ fn generate_with_source_root_directories_returns_generated_components() {
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -343,7 +343,7 @@ fn generate_scan_with_rust_internal_imports_returns_generated_component_relation
     .expect("write api source");
     fs::write(repo.join("src/domain/mod.rs"), "pub struct Thing;\n").expect("write domain source");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--scan", "--json", "--repo"])
         .arg(&repo)
@@ -385,7 +385,7 @@ fn generate_scan_with_grouped_rust_imports_returns_generated_component_relations
     fs::write(repo.join("src/domain/mod.rs"), "pub struct Thing;\n").expect("write domain source");
     fs::write(repo.join("src/jobs/mod.rs"), "pub struct Job;\n").expect("write jobs source");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--scan", "--json", "--repo"])
         .arg(&repo)
@@ -422,7 +422,7 @@ fn generate_scan_with_rust_super_imports_returns_generated_component_relationshi
     .expect("write api source");
     fs::write(repo.join("src/domain/mod.rs"), "pub struct Thing;\n").expect("write domain source");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--scan", "--json", "--repo"])
         .arg(&repo)
@@ -455,7 +455,7 @@ fn generate_does_not_emit_components_from_symlinked_source_root() {
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -485,7 +485,7 @@ fn generate_skips_component_directories_with_invalid_code_path_names() {
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -511,7 +511,7 @@ fn generate_with_root_package_json_manifest_returns_generated_system_and_contain
     fs::write(repo.join("package.json"), r#"{"name": "@acme/web-client"}"#)
         .expect("write package manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -536,7 +536,7 @@ fn generate_with_root_dockerfile_returns_fallback_generated_container() {
     fs::create_dir(&repo).expect("create repo");
     fs::write(repo.join("Dockerfile"), "FROM alpine:3.20\n").expect("write dockerfile");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -567,7 +567,7 @@ fn generate_with_root_dockerfile_and_manifest_does_not_duplicate_container() {
     .expect("write cargo manifest");
     fs::write(repo.join("Dockerfile"), "FROM rust:1.80\n").expect("write dockerfile");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -603,7 +603,7 @@ services:
     )
     .expect("write compose manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -640,7 +640,7 @@ services:
     )
     .expect("write compose manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -676,7 +676,7 @@ services:
     )
     .expect("write compose manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -712,7 +712,7 @@ services:
     )
     .expect("write compose manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -746,7 +746,7 @@ services:
     )
     .expect("write compose manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -785,7 +785,7 @@ fn generate_with_package_json_dependencies_returns_external_targets_and_relation
     )
     .expect("write package manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -848,7 +848,7 @@ systems:
     )
     .expect("write package manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -898,7 +898,7 @@ systems:
     )
     .expect("write package manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -949,7 +949,7 @@ systems:
     )
     .expect("write package manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -992,7 +992,7 @@ systems:
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1035,7 +1035,7 @@ systems:
     )
     .expect("write cargo manifest");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
@@ -1074,7 +1074,7 @@ actors:
     )
     .expect("write go manifest");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
@@ -1114,7 +1114,7 @@ systems:
     )
     .expect("write go manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1158,7 +1158,7 @@ systems:
     )
     .expect("write go manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1203,7 +1203,7 @@ systems:
     )
     .expect("write go manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1242,7 +1242,7 @@ systems:
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1283,7 +1283,7 @@ systems:
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1324,7 +1324,7 @@ systems:
     )
     .expect("write cargo manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1352,7 +1352,7 @@ fn generate_with_root_go_mod_manifest_returns_generated_system_and_container() {
     )
     .expect("write go manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1385,7 +1385,7 @@ version = "0.1.0"
     )
     .expect("write pyproject manifest");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1411,7 +1411,7 @@ fn generate_with_root_requirements_txt_manifest_returns_fallback_python_containe
     fs::create_dir(&repo).expect("create repo");
     fs::write(repo.join("requirements.txt"), "flask==3.0\n").expect("write requirements");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1440,7 +1440,7 @@ fn generate_with_root_gemfile_manifest_uses_rails_tech() {
     )
     .expect("write gemfile");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1462,7 +1462,7 @@ fn generate_write_reports_write_locked_when_writer_is_active() {
     let repo = fresh_test_dir("generate-write-locked");
     let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
         .expect("preacquired lock");
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -1480,7 +1480,7 @@ fn generate_read_only_json_succeeds_when_writer_is_active() {
     let repo = fresh_test_dir("generate-read-only-locked");
     let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
         .expect("preacquired lock");
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--json", "--repo"])
         .arg(&repo)
@@ -1499,7 +1499,7 @@ fn generate_read_only_json_succeeds_when_writer_is_active() {
 #[test]
 fn generate_check_succeeds_when_writer_is_active() {
     let repo = fresh_test_dir("generate-check-locked");
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--repo"])
         .arg(&repo)
@@ -1508,7 +1508,7 @@ fn generate_check_succeeds_when_writer_is_active() {
 
     let lock = acquire_repo_write_lock(&repo_handle_from_path(&repo).expect("repo handle"))
         .expect("preacquired lock");
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--check", "--json", "--repo"])
         .arg(&repo)
@@ -1528,7 +1528,7 @@ fn generate_check_succeeds_when_writer_is_active() {
 fn generate_check_and_write_is_invalid_usage() {
     let repo = fresh_test_dir("generate-check-write");
 
-    Command::cargo_bin("c4lens-cli")
+    Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--check", "--write", "--repo"])
         .arg(&repo)
@@ -1546,7 +1546,7 @@ fn generate_write_rejects_symlinked_c4_directory() {
     let outside = fresh_test_dir("generate-write-symlink-c4-outside");
     std::os::unix::fs::symlink(&outside, repo.join("c4")).expect("symlink c4");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -1573,7 +1573,7 @@ fn generate_write_rejects_symlinked_generated_overlay() {
     std::os::unix::fs::symlink(&outside_target, repo.join("c4/model.generated.yml"))
         .expect("symlink overlay");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--write", "--json", "--repo"])
         .arg(&repo)
@@ -1602,7 +1602,7 @@ fn generate_check_rejects_symlinked_overlay_without_disclosing_target() {
     std::os::unix::fs::symlink(&outside_target, repo.join("c4/model.generated.yml"))
         .expect("symlink overlay");
 
-    let assert = Command::cargo_bin("c4lens-cli")
+    let assert = Command::cargo_bin("c4lens")
         .expect("binary")
         .args(["generate", "--check", "--json", "--repo"])
         .arg(&repo)

@@ -11,6 +11,8 @@ The project is intentionally local-first:
 - React/Vite renderer for navigation, derived C4 views, ELK layout, and canvas
   rendering.
 - CLI commands for headless validation, scanning, and generation.
+- Best-effort symbol and import indexing for the MVP language set:
+  TypeScript/JavaScript, Ruby, Rust, Go, and Python.
 
 ## Repository Layout
 

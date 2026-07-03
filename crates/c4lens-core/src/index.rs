@@ -14,7 +14,12 @@ use crate::{
     ValidationIssue, ValidationSeverity, ValidationStage,
 };
 
+mod artifacts;
+mod go;
+mod python;
+mod ruby;
 mod rust;
+mod typescript;
 
 const MIGRATION_VERSION: i64 = 1;
 const MAX_SCANNABLE_FILE_BYTES: i64 = 2 * 1024 * 1024;
@@ -884,10 +889,16 @@ fn parse_file_artifacts(
     repo_root: &Path,
     source_path: &str,
     text: &str,
-) -> rust::ParsedArtifacts {
+) -> artifacts::ParsedArtifacts {
     match lang {
+        "go" => go::parse_file_artifacts(repo_root, source_path, text),
+        "javascript" | "typescript" => {
+            typescript::parse_file_artifacts(repo_root, source_path, text)
+        }
+        "python" => python::parse_file_artifacts(repo_root, source_path, text),
+        "ruby" => ruby::parse_file_artifacts(repo_root, source_path, text),
         "rust" => rust::parse_file_artifacts(repo_root, source_path, text),
-        _ => rust::ParsedArtifacts::default(),
+        _ => artifacts::ParsedArtifacts::default(),
     }
 }
 
@@ -1026,7 +1037,7 @@ fn refresh_internal_import_resolutions(
     let mut statement = connection
         .prepare(
             r#"
-SELECT imports.id, files.path, imports.target_module
+SELECT imports.id, files.path, files.lang, imports.target_module, imports.target_path
 FROM imports
 JOIN files ON files.id = imports.file_id
 WHERE files.repo_id = ?1
@@ -1040,7 +1051,9 @@ ORDER BY imports.id
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(sqlite_error)?;
@@ -1050,9 +1063,12 @@ ORDER BY imports.id
         imports.push(row.map_err(sqlite_error)?);
     }
 
-    for (import_id, source_path, target_module) in imports {
-        let target_path =
-            rust::resolve_internal_import_target(repo_root, &source_path, &target_module);
+    for (import_id, source_path, lang, target_module, existing_target_path) in imports {
+        let target_path = if lang.as_deref() == Some("rust") {
+            rust::resolve_internal_import_target(repo_root, &source_path, &target_module)
+        } else {
+            existing_target_path.filter(|path| repo_root.join(path).is_file())
+        };
         connection
             .execute(
                 r#"
@@ -1586,6 +1602,7 @@ fn has_nul_in_prefix(bytes: &[u8], max: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1809,6 +1826,199 @@ ORDER BY lower(symbols.name)
             )
             .expect("query files after delete");
         assert_eq!(file_count, 2);
+
+        cleanup(index_root);
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_extracts_mvp_language_symbols_and_imports() {
+        let root = fresh_test_dir("scan-mvp-languages");
+        let index_root = fresh_test_dir("scan-mvp-languages-index");
+        let db_path = index_root.join("index.sqlite3");
+        write_file(&root, "c4/model.yml", "name: Language Repo\n");
+        write_file(&root, "package.json", r#"{"name": "language-repo"}"#);
+        write_file(&root, "go.mod", "module example.com/language\n");
+        write_file(
+            &root,
+            "src/index.ts",
+            r#"
+import { handle } from "./worker";
+import React from "react";
+export class ApiClient {}
+export interface Handler {}
+export const API_URL = "/api";
+const boot = () => {};
+"#,
+        );
+        write_file(&root, "src/worker.ts", "export function handle() {}\n");
+        write_file(
+            &root,
+            "app/service.py",
+            r#"
+import os, app.tasks as tasks
+from .tasks import run_task
+API_URL = "/api"
+class Service:
+    def handle(self):
+        pass
+async def boot():
+    pass
+"#,
+        );
+        write_file(&root, "app/tasks.py", "def run_task():\n    pass\n");
+        write_file(
+            &root,
+            "lib/app/service.rb",
+            r#"
+require "json"
+require_relative "task"
+module App
+  class Service
+    API_URL = "/api"
+    def call
+    end
+  end
+end
+"#,
+        );
+        write_file(&root, "lib/app/task.rb", "class Task\nend\n");
+        write_file(
+            &root,
+            "cmd/api/main.go",
+            r#"
+package main
+
+import (
+  "fmt"
+  jobs "example.com/language/internal/jobs"
+)
+
+const Version = "1"
+type Server struct {}
+type Handler interface {}
+func NewServer() {}
+func (s *Server) Serve() {}
+"#,
+        );
+        write_file(&root, "internal/jobs/jobs.go", "package jobs\n");
+
+        let repo = repo_handle_from_path(&root).expect("repo handle");
+        let summary = scan_repo(
+            repo.clone(),
+            ScanOptions {
+                force: false,
+                index_path: Some(db_path.clone()),
+            },
+        )
+        .expect("scan repo");
+
+        assert!(summary.symbols >= 20);
+        assert!(summary.imports >= 7);
+
+        let connection = Connection::open(&db_path).expect("open db");
+        let mut symbol_statement = connection
+            .prepare(
+                r#"
+SELECT files.lang, symbols.kind || ':' || symbols.name
+FROM symbols
+JOIN files ON files.id = symbols.file_id
+WHERE files.repo_id = ?1
+ORDER BY files.lang, files.path, symbols.start_line, symbols.start_column
+"#,
+            )
+            .expect("prepare symbol query");
+        let symbol_rows = symbol_statement
+            .query_map(params![repo.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query symbols");
+        let mut symbols_by_lang: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in symbol_rows {
+            let (lang, symbol) = row.expect("symbol row");
+            symbols_by_lang.entry(lang).or_default().push(symbol);
+        }
+
+        assert_eq!(
+            symbols_by_lang
+                .get("typescript")
+                .expect("typescript symbols"),
+            &[
+                "class:ApiClient",
+                "interface:Handler",
+                "constant:API_URL",
+                "function:boot",
+                "function:handle",
+            ]
+        );
+        assert_eq!(
+            symbols_by_lang.get("python").expect("python symbols"),
+            &[
+                "constant:API_URL",
+                "class:Service",
+                "method:handle",
+                "function:boot",
+                "function:run_task",
+            ]
+        );
+        assert_eq!(
+            symbols_by_lang.get("ruby").expect("ruby symbols"),
+            &[
+                "module:App",
+                "class:Service",
+                "constant:API_URL",
+                "method:call",
+                "class:Task",
+            ]
+        );
+        assert_eq!(
+            symbols_by_lang.get("go").expect("go symbols"),
+            &[
+                "constant:Version",
+                "struct:Server",
+                "interface:Handler",
+                "function:NewServer",
+                "method:Serve",
+            ]
+        );
+
+        let mut import_statement = connection
+            .prepare(
+                r#"
+SELECT files.lang, imports.kind || ':' || imports.target_module || ':' || COALESCE(imports.target_path, '')
+FROM imports
+JOIN files ON files.id = imports.file_id
+WHERE files.repo_id = ?1
+ORDER BY files.lang, files.path, imports.target_module
+"#,
+            )
+            .expect("prepare import query");
+        let import_rows = import_statement
+            .query_map(params![repo.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query imports");
+        let mut imports_by_lang: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in import_rows {
+            let (lang, import) = row.expect("import row");
+            imports_by_lang.entry(lang).or_default().push(import);
+        }
+
+        assert!(imports_by_lang
+            .get("typescript")
+            .expect("typescript imports")
+            .contains(&"internal:./worker:src/worker.ts".to_string()));
+        assert!(imports_by_lang
+            .get("python")
+            .expect("python imports")
+            .contains(&"internal:.tasks:app/tasks.py".to_string()));
+        assert!(imports_by_lang
+            .get("ruby")
+            .expect("ruby imports")
+            .contains(&"internal:task:lib/app/task.rb".to_string()));
+        assert!(imports_by_lang.get("go").expect("go imports").contains(
+            &"internal:example.com/language/internal/jobs:internal/jobs/jobs.go".to_string()
+        ));
 
         cleanup(index_root);
         cleanup(root);
