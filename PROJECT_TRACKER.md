@@ -22,24 +22,29 @@ Current batch: none.
 
 Last completed batch:
 
-- Added CI artifact retention and versioned artifact naming for macOS package
-  uploads.
-- Added release artifact handling docs for CI artifact selection, manifest
-  verification, and retention.
-- Added the signing/notarization MVP decision and follow-up gate.
-- Added MVP QA triage rules for blockers, accepted issues, and follow-ups.
+- Ran the first internal first-run QA path and reproduced setup gaps in the
+  walkthrough.
+- Added `npm run qa:first-run` to automate the first-run CLI QA path with
+  isolated c4lens state.
+- Updated the first-run walkthrough to refresh schema before expecting
+  `doctor` readiness.
+- Recorded the first-run QA result in `docs/qa/mvp-first-run-2026-07-03.md`.
+- Confirmed no signed/notarized follow-up branch is required for internal-only
+  MVP validation; that work remains deferred until wider sharing.
 
 Verification status:
 
+- Initial ad hoc first-run CLI path: found walkthrough/setup gaps.
+- `npm run smoke:mvp`: passed.
+- `npm run qa:first-run`: passed.
 - `npm run check:all`: passed.
-- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml")'`:
-  passed.
 - `git diff --check`: passed.
 
 ## Recent Batches
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `ba9a730` | MVP release artifact workflow hardening | Added versioned/retained CI artifacts, artifact handling docs, signing/notarization decision, QA triage, and passed `npm run check:all`. |
 | `769b71e` | MVP release execution guides | Added CLI quickstart, first-run walkthrough, manual QA template, tracker updates, and passed `npm run smoke:release`. |
 | `3d3376f` | CLI repo doctor and project tracker | Added `c4lens doctor`, doctor integration coverage, MVP smoke coverage, and the project tracker. |
 | `516a883` | CLI onboarding commands | Added `c4lens init`, `c4lens schema`, CLI tests, MVP smoke coverage, and onboarding docs. |
@@ -72,14 +77,14 @@ Useful targeted checks:
 
 Pick from this list when the user asks for the next MVP task batch:
 
-- Run the first internal manual QA pass from
+- Run the installed DMG desktop pass from
   `docs/mvp-first-run-walkthrough.md`.
-- Resolve blocker or high-severity findings from
-  `docs/mvp-qa-triage.md`.
+- Resolve blocker or high-severity findings from the installed desktop pass
+  using `docs/mvp-qa-triage.md`.
 - Push the current release-candidate commits and confirm CI artifact upload
   naming/retention in GitHub Actions.
-- Prepare a signed/notarized follow-up branch only if the candidate needs to be
-  shared beyond internal reviewers.
+- If the candidate needs to be shared beyond internal reviewers, start the
+  signed/notarized follow-up from `docs/signing-notarization.md`.
 
 ## Known Non-Blocking MVP Limits
 

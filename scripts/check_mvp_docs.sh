@@ -22,6 +22,7 @@ require_contains README.md "c4lens init --repo /path/to/repo --name \"My System\
 require_contains README.md "c4lens schema --repo /path/to/repo"
 require_contains README.md "c4lens doctor --repo /path/to/repo"
 require_contains README.md "npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo"
+require_contains README.md "npm run qa:first-run"
 require_contains README.md "[Project tracker](PROJECT_TRACKER.md)"
 require_contains README.md "[CLI quickstart](docs/cli-quickstart.md)"
 require_contains README.md "[Release artifact handling](docs/release-artifact-handling.md)"
@@ -47,6 +48,7 @@ require_contains docs/roadmap.md "| MVP documentation contract check | Implement
 require_contains docs/roadmap.md "| CLI quickstart | Implemented |"
 require_contains docs/roadmap.md "| MVP first-run walkthrough | Implemented |"
 require_contains docs/roadmap.md "| MVP manual QA template | Implemented |"
+require_contains docs/roadmap.md "| First-run CLI QA gate | Implemented |"
 require_contains docs/roadmap.md "| CI artifact retention and versioning | Implemented |"
 require_contains docs/roadmap.md "| Release artifact handling guide | Implemented |"
 require_contains docs/roadmap.md "| MVP QA triage | Implemented |"
@@ -94,6 +96,9 @@ require_contains docs/cli-quickstart.md "c4lens scan --repo /path/to/repo --json
 require_contains docs/cli-quickstart.md "c4lens generate --repo /path/to/repo --write"
 require_contains docs/cli-quickstart.md "c4lens validate --repo /path/to/repo"
 require_contains docs/mvp-first-run-walkthrough.md "npm run demo:mvp-repo -- /tmp/c4lens-mvp-demo"
+require_contains docs/mvp-first-run-walkthrough.md "npm run qa:first-run -- /tmp/c4lens-mvp-demo"
+require_contains docs/mvp-first-run-walkthrough.md "C4LENS_INDEX_DIR"
+require_contains docs/mvp-first-run-walkthrough.md "target/debug/c4lens schema --repo /tmp/c4lens-mvp-demo"
 require_contains docs/mvp-first-run-walkthrough.md "target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --write"
 require_contains docs/mvp-first-run-walkthrough.md "Export SVG, PDF, and PNG from the current view."
 require_contains docs/mvp-manual-qa-template.md "Candidate commit:"
@@ -106,6 +111,11 @@ require_contains docs/spec/c4lens-desktop-spec.md "c4lens doctor [--repo PATH] [
 require_contains docs/spec/c4lens-desktop-spec.md "c4lens init [--repo PATH] [--name NAME] [--json]"
 require_contains docs/spec/c4lens-desktop-spec.md "c4lens schema [--repo PATH] [--json]"
 require_contains docs/design/c4lens-desktop-design.md "SVG/PDF/PNG"
+require_contains package.json "\"qa:first-run\": \"bash scripts/qa_first_run_cli.sh\""
+require_contains scripts/qa_first_run_cli.sh "C4LENS_INDEX_DIR"
+require_contains scripts/qa_first_run_cli.sh "MVP first-run CLI QA passed"
+require_contains docs/qa/mvp-first-run-2026-07-03.md "npm run qa:first-run"
+require_contains docs/qa/mvp-first-run-2026-07-03.md "Blocker/high findings"
 
 if [[ "$failures" -ne 0 ]]; then
   exit 1

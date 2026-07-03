@@ -18,22 +18,42 @@ language set.
 
 ## Validate The CLI Path
 
-From a local build, use the CLI against the demo repository:
+For the repeatable first-run CLI gate, run:
 
 ```sh
+npm run qa:first-run -- /tmp/c4lens-mvp-demo
+```
+
+This creates the demo repository, builds the CLI, isolates `HOME` and
+`C4LENS_INDEX_DIR` under temporary QA state, verifies that `doctor` requests a
+schema refresh before first-run setup is complete, refreshes the schema, and
+then exercises validation, scan, generation preview, generation write, drift
+check, and final validation.
+
+To run the same flow manually from a local build, isolate c4lens state before
+using the CLI against the demo repository:
+
+```sh
+export C4LENS_QA_HOME=/tmp/c4lens-mvp-qa-home
+export C4LENS_INDEX_DIR=/tmp/c4lens-mvp-qa-indexes
+mkdir -p "$C4LENS_QA_HOME" "$C4LENS_INDEX_DIR"
 cargo build -p c4lens-cli
-target/debug/c4lens doctor --repo /tmp/c4lens-mvp-demo
-target/debug/c4lens validate --repo /tmp/c4lens-mvp-demo
-target/debug/c4lens scan --repo /tmp/c4lens-mvp-demo --json
-target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --scan --json
-target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --write
-target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --check
-target/debug/c4lens validate --repo /tmp/c4lens-mvp-demo
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens doctor --repo /tmp/c4lens-mvp-demo
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens schema --repo /tmp/c4lens-mvp-demo
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens doctor --repo /tmp/c4lens-mvp-demo
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens validate --repo /tmp/c4lens-mvp-demo
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens scan --repo /tmp/c4lens-mvp-demo --json
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --scan --json
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --write
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens generate --repo /tmp/c4lens-mvp-demo --check
+HOME="$C4LENS_QA_HOME" C4LENS_INDEX_DIR="$C4LENS_INDEX_DIR" target/debug/c4lens validate --repo /tmp/c4lens-mvp-demo
 ```
 
 Expected results:
 
-- `doctor` reports the repository as ready.
+- The first `doctor` reports that `c4/schema.json` should be refreshed.
+- `schema` creates `c4/schema.json`.
+- The second `doctor` reports the repository as ready.
 - `scan --json` reports symbols and imports across the demo source files.
 - `generate --scan --json` includes generated import relationships.
 - `generate --write` creates `c4/model.generated.yml` and refreshes

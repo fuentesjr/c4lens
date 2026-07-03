@@ -104,6 +104,7 @@ npm run test
 npm run package:manifest
 npm run smoke:mvp
 npm run smoke:release
+npm run qa:first-run
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -119,6 +120,10 @@ E2E workflow tests.
 
 `npm run smoke:release` runs the full quality gate, MVP smoke, unsigned
 universal macOS build, and artifact verification. It must run on macOS.
+
+`npm run qa:first-run` creates a disposable demo repository, isolates c4lens
+state under temporary QA directories, and exercises the first-run CLI path from
+schema refresh through scan, generation, write, drift check, and validation.
 
 ## Reference Docs
 
