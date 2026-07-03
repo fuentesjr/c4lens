@@ -23,6 +23,17 @@ npm run check:all
 This is the same command used by CI. It runs Rust formatting, Clippy with
 warnings denied, Rust tests, TypeScript checking, Vitest, and whitespace checks.
 
+## Branch And Scope Hygiene
+
+Keep unsupported language and runtime experiments on short-lived branches until
+they are explicitly accepted into the roadmap. If out-of-scope work has already
+been published, prefer an explicit revert unless maintainers choose to rewrite
+the branch before review or release.
+
+Before publishing a branch, make the history strategy intentional: either keep
+the revert as part of the record, or squash/rewrite unpublished local history so
+reviewers do not have to reason about reverted experiments.
+
 ## Development Notes
 
 - Keep generated overlay behavior centralized in `c4lens-core`.
