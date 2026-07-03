@@ -12,6 +12,8 @@ macOS MVP build.
 - Candidate version:
 - Candidate commit:
 - Artifact source:
+- Artifact name:
+- Workflow run:
 - App path:
 - DMG path:
 - `release-manifest.json` path:
@@ -58,6 +60,8 @@ List any issue that should prevent sharing the candidate:
 ```text
 
 ```
+
+Classify findings with [MVP QA triage](mvp-qa-triage.md).
 
 ## Follow-Ups
 

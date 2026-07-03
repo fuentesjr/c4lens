@@ -73,7 +73,10 @@ target/universal-apple-darwin/release/bundle/release-manifest.json
 ```
 
 CI also uploads this bundle directory from the macOS packaging job on pushes to
-`main` and manual workflow dispatches.
+`main` and manual workflow dispatches. CI artifact names follow
+`c4lens-<version>-macos-universal-<commit-sha>` and are retained for 14 days.
+Use [release artifact handling](release-artifact-handling.md) before sharing a
+candidate from CI.
 
 Use [MVP release notes](mvp-release-notes.md) as the candidate summary when
 sharing an internal build.
@@ -82,7 +85,8 @@ sharing an internal build.
 
 Use the [MVP first-run walkthrough](mvp-first-run-walkthrough.md) for a concise
 end-to-end validation path, and record formal candidate results with the
-[MVP manual QA template](mvp-manual-qa-template.md).
+[MVP manual QA template](mvp-manual-qa-template.md). Classify any findings with
+[MVP QA triage](mvp-qa-triage.md).
 
 To create a disposable repository for manual MVP checks:
 
@@ -128,3 +132,6 @@ These are intentionally not blockers for the internal MVP candidate:
 - No local agent API.
 - No signed/notarized installer.
 - No auto-updater.
+
+The unsigned internal-release decision and follow-up gate are documented in
+[signing and notarization decision](signing-notarization.md).

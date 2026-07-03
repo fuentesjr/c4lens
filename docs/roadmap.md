@@ -67,6 +67,10 @@ listed here are planned or deferred capabilities, not regressions.
 | CLI quickstart | Implemented | `docs/cli-quickstart.md` documents the first-run CLI path from `init` and `doctor` through scan, generation, drift check, and validation. |
 | MVP first-run walkthrough | Implemented | `docs/mvp-first-run-walkthrough.md` gives reviewers a concise CLI plus desktop validation path against the demo repository. |
 | MVP manual QA template | Implemented | `docs/mvp-manual-qa-template.md` captures candidate metadata, automated gate results, and manual release smoke outcomes. |
+| CI artifact retention and versioning | Implemented | CI uploads macOS artifacts as `c4lens-<version>-macos-universal-<commit-sha>` with 14-day retention. |
+| Release artifact handling guide | Implemented | `docs/release-artifact-handling.md` documents CI artifact selection, manifest verification, and retention expectations. |
+| MVP QA triage | Implemented | `docs/mvp-qa-triage.md` defines blocker/high/medium/low handling before an internal candidate is shared. |
+| Signing/notarization decision | Implemented | `docs/signing-notarization.md` records that the MVP remains unsigned for internal validation and defines the follow-up gate. |
 | Internal MVP release notes | Implemented | `docs/mvp-release-notes.md` summarizes shipped scope, verification, artifact names, known limits, and upgrade notes for the internal candidate. |
 | Internal MVP release checklist | Implemented | `docs/mvp-release-checklist.md` captures the automated gate, artifact paths, manual smoke, and known non-blocking MVP limits. |
 

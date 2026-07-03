@@ -3,7 +3,8 @@
 Version: 0.1.0
 
 These notes describe the internal macOS MVP candidate. The artifact is an
-unsigned universal macOS app bundle plus DMG for local/internal validation:
+unsigned and unnotarized universal macOS app bundle plus DMG for local/internal
+validation:
 
 ```text
 target/universal-apple-darwin/release/bundle/macos/c4lens.app
@@ -31,6 +32,8 @@ target/universal-apple-darwin/release/bundle/release-manifest.json
 - SVG, PDF, and PNG export from the current view.
 - Unsigned universal macOS app and DMG packaging for internal validation.
 - `release-manifest.json` with artifact paths, DMG byte size, and DMG SHA-256.
+- CI artifact names include the candidate version and commit SHA, and are
+  retained for 14 days.
 
 ## Verification
 

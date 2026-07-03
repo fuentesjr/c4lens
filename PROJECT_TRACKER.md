@@ -22,21 +22,25 @@ Current batch: none.
 
 Last completed batch:
 
-- Ran `npm run smoke:release` against the current branch.
-- Added `docs/mvp-manual-qa-template.md` for release candidate result capture.
-- Added `docs/mvp-first-run-walkthrough.md` for reviewer first-run validation.
-- Added `docs/cli-quickstart.md` for the end-to-end CLI setup and generation
-  flow.
+- Added CI artifact retention and versioned artifact naming for macOS package
+  uploads.
+- Added release artifact handling docs for CI artifact selection, manifest
+  verification, and retention.
+- Added the signing/notarization MVP decision and follow-up gate.
+- Added MVP QA triage rules for blockers, accepted issues, and follow-ups.
 
 Verification status:
 
-- `npm run check:mvp-docs`: passed.
-- `npm run smoke:release`: passed.
+- `npm run check:all`: passed.
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml")'`:
+  passed.
+- `git diff --check`: passed.
 
 ## Recent Batches
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `769b71e` | MVP release execution guides | Added CLI quickstart, first-run walkthrough, manual QA template, tracker updates, and passed `npm run smoke:release`. |
 | `3d3376f` | CLI repo doctor and project tracker | Added `c4lens doctor`, doctor integration coverage, MVP smoke coverage, and the project tracker. |
 | `516a883` | CLI onboarding commands | Added `c4lens init`, `c4lens schema`, CLI tests, MVP smoke coverage, and onboarding docs. |
 | `132fbdd` | MVP release artifacts | Added CLI/app version visibility and macOS `release-manifest.json` generation/verification. |
@@ -68,11 +72,14 @@ Useful targeted checks:
 
 Pick from this list when the user asks for the next MVP task batch:
 
-- Add packaged artifact retention/version notes to release docs if CI output
-  proves ambiguous.
-- Resolve issues found by the first internal manual QA pass.
-- Decide whether the internal MVP candidate needs a signed/notarized follow-up
-  before wider sharing.
+- Run the first internal manual QA pass from
+  `docs/mvp-first-run-walkthrough.md`.
+- Resolve blocker or high-severity findings from
+  `docs/mvp-qa-triage.md`.
+- Push the current release-candidate commits and confirm CI artifact upload
+  naming/retention in GitHub Actions.
+- Prepare a signed/notarized follow-up branch only if the candidate needs to be
+  shared beyond internal reviewers.
 
 ## Known Non-Blocking MVP Limits
 

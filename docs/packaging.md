@@ -49,6 +49,18 @@ image integrity, and release manifest before artifacts are uploaded. CI also
 runs the unsigned macOS packaging job on pushes to `main` and manual workflow
 dispatches.
 
+CI uploads the verified bundle with a versioned artifact name:
+
+```text
+c4lens-<version>-macos-universal-<commit-sha>
+```
+
+The upload uses `retention-days: 14`; use the artifact only as a short-lived
+internal candidate. Use `release-manifest.json` to confirm the packaged version,
+DMG path, byte size, and SHA-256 before sharing. See
+[release artifact handling](release-artifact-handling.md) for the full
+selection and verification process.
+
 Use the [MVP release checklist](mvp-release-checklist.md) and
 [MVP release notes](mvp-release-notes.md) before sharing an internal macOS
 candidate.
@@ -58,3 +70,6 @@ candidate.
 Unsigned artifacts are for internal development only. Before sharing outside
 local development, produce a signed and notarized build and remove `--no-sign`
 from the release command.
+
+The current internal MVP decision is captured in
+[signing and notarization decision](signing-notarization.md).
