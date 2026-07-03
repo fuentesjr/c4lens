@@ -22,25 +22,32 @@ Current batch: none.
 
 Last completed batch:
 
-- Added `npm run qa:release-candidate` as a focused pre-human-review gate for
-  first-run CLI QA, installed macOS artifact QA, and MVP docs contract checks.
-- Added `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` to verify
-  versioned CI artifact metadata, retention status, and non-empty artifact size.
-- Added `docs/qa/mvp-installed-gui-2026-07-03.md` as the current candidate
-  handoff for the remaining human installed-app interaction pass.
-- Updated README, roadmap, release checklist, artifact handling, first-run
-  walkthrough, and docs contract coverage for the new release-candidate checks.
-- Total elapsed task time: 9m 13s, from 2026-07-03 15:50:48 PDT to
-  2026-07-03 16:00:01 PDT.
+- Pushed prior local release-candidate commits through `cf5b712` upstream.
+- Added `npm run qa:current-ci-artifact -- <commit-sha>` to locate the
+  successful CI run for a pushed commit and verify its macOS artifact contract.
+- Added `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>` to generate
+  the installed-app GUI QA handoff from CI artifact metadata.
+- Confirmed pushed CI run `28687518031` passed for
+  `cf5b712d61b1aec4539066b258ab5cbddd525ffd` and recorded
+  `docs/qa/ci-artifact-cf5b712-2026-07-03.md`.
+- Regenerated `docs/qa/mvp-installed-gui-2026-07-03.md` for the current
+  pushed artifact.
+- Total elapsed task time: 20m 02s, from 2026-07-03 16:19:56 PDT to
+  2026-07-03 16:39:58 PDT.
 
 Verification status:
 
 - `npm run qa:release-candidate`: passed.
-- `npm run qa:ci-artifact -- 28686171140
-  26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`: passed; artifact
-  `c4lens-0.1.0-macos-universal-26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`
-  expires `2026-07-17T22:39:51Z` and is 24593811 bytes.
+- `npm run qa:current-ci-artifact --
+  cf5b712d61b1aec4539066b258ab5cbddd525ffd`: passed; artifact
+  `c4lens-0.1.0-macos-universal-cf5b712d61b1aec4539066b258ab5cbddd525ffd`
+  expires `2026-07-17T23:24:31Z` and is 24593691 bytes.
+- `npm run qa:gui-handoff -- 28687518031
+  cf5b712d61b1aec4539066b258ab5cbddd525ffd
+  docs/qa/mvp-installed-gui-2026-07-03.md`: passed.
 - `npm run check:all`: passed.
+- `bash -n scripts/qa_current_ci_artifact.sh
+  scripts/write_mvp_installed_gui_handoff.sh`: passed.
 - `git diff --check`: passed.
 - Human installed-app GUI pass: not run; use
   `docs/qa/mvp-installed-gui-2026-07-03.md`.
@@ -49,6 +56,7 @@ Verification status:
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `cf5b712` | Release-candidate QA checks | Added `npm run qa:release-candidate`, CI artifact metadata verification, installed-GUI handoff logging, docs wiring, and passed `npm run check:all`. |
 | `56bec41` | Installed macOS artifact QA | Added `npm run qa:installed-macos`, recorded automated installed-artifact QA, and captured CI artifact metadata for run `28686171140`. |
 | `26e8e04` | CI Rust setup fix | Fixed CI Rust component setup syntax after push validation, docs contract coverage, and confirmed follow-up CI passed with artifact upload. |
 | `288caf6` | MVP first-run QA gate | Added `npm run qa:first-run`, first-run QA result logging, walkthrough corrections, and passed `npm run check:all`. |
@@ -82,6 +90,8 @@ Useful targeted checks:
 - `npm run package:verify`
 - `npm run qa:release-candidate`
 - `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>`
+- `npm run qa:current-ci-artifact -- <commit-sha>`
+- `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>`
 
 ## Next Candidate Tasks
 
@@ -91,8 +101,10 @@ Pick from this list when the user asks for the next MVP task batch:
   `docs/qa/mvp-installed-gui-2026-07-03.md`.
 - Resolve blocker or high-severity findings from the installed desktop pass
   using `docs/mvp-qa-triage.md`.
-- Use the CI artifact from run `28686171140` while it is retained, or rebuild
-  locally with `npm run smoke:release` after `2026-07-17T22:39:51Z`.
+- Use the CI artifact from run `28687518031` while it is retained, or rebuild
+  locally with `npm run smoke:release` after `2026-07-17T23:24:31Z`.
+- Push this task-batch commit before expecting CI artifact coverage for these
+  script/doc updates.
 - If the candidate needs to be shared beyond internal reviewers, start the
   signed/notarized follow-up from `docs/signing-notarization.md`.
 

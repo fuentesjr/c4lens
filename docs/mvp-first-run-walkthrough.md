@@ -79,6 +79,14 @@ This mounts the DMG, copies `c4lens.app` to a temporary install directory,
 checks installed bundle metadata, verifies the universal executable, and
 cross-checks `release-manifest.json`.
 
+For a CI candidate, verify the pushed commit artifact and regenerate the GUI
+handoff before installing:
+
+```sh
+npm run qa:current-ci-artifact -- <commit-sha>
+npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
+```
+
 Launch the app in development or install the release candidate from the DMG:
 
 ```sh

@@ -93,6 +93,7 @@ To verify the current CI artifact metadata before installing it, run:
 
 ```sh
 npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
+npm run qa:current-ci-artifact -- <commit-sha>
 ```
 
 Use [MVP release notes](mvp-release-notes.md) as the candidate summary when
@@ -108,6 +109,12 @@ end-to-end validation path, and record formal candidate results with the
 For the current candidate handoff, use
 `docs/qa/mvp-installed-gui-2026-07-03.md` to drive and record the remaining
 installed-app interaction pass.
+
+To regenerate the handoff from CI artifact metadata for a newer candidate, run:
+
+```sh
+npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
+```
 
 To create a disposable repository for manual MVP checks:
 

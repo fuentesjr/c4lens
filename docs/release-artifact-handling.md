@@ -55,11 +55,21 @@ Verify the CI artifact metadata before downloading or sharing it:
 
 ```sh
 npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
+npm run qa:current-ci-artifact -- <commit-sha>
 ```
 
 The command checks that the expected
 `c4lens-<version>-macos-universal-<commit-sha>` artifact exists, is non-empty,
 has not expired, and has an expiration timestamp.
+
+For a pushed commit on the current branch, prefer
+`npm run qa:current-ci-artifact -- <commit-sha>`; it finds the successful `CI`
+run before checking the artifact metadata. Once the artifact is selected,
+generate the installed-app handoff with:
+
+```sh
+npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
+```
 
 ## Version And Commit Verification
 

@@ -72,6 +72,8 @@ listed here are planned or deferred capabilities, not regressions.
 | MVP release-candidate QA aggregate | Implemented | `npm run qa:release-candidate` runs the first-run CLI QA, installed macOS artifact QA, and MVP docs contract before the human installed-app pass. |
 | CI artifact contract QA | Implemented | `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` verifies the expected versioned macOS CI artifact exists, is non-empty, and has not expired. |
 | Installed GUI QA handoff log | Implemented | `docs/qa/mvp-installed-gui-2026-07-03.md` records the current candidate artifact and the remaining human installed-app interaction checklist. |
+| Current commit CI artifact QA | Implemented | `npm run qa:current-ci-artifact -- <commit-sha>` locates the successful CI run for a pushed commit and verifies the matching macOS artifact. |
+| Installed GUI handoff generator | Implemented | `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>` writes a dated human GUI QA handoff from CI artifact metadata. |
 | CI artifact retention and versioning | Implemented | CI uploads macOS artifacts as `c4lens-<version>-macos-universal-<commit-sha>` with 14-day retention. |
 | Release artifact handling guide | Implemented | `docs/release-artifact-handling.md` documents CI artifact selection, manifest verification, and retention expectations. |
 | MVP QA triage | Implemented | `docs/mvp-qa-triage.md` defines blocker/high/medium/low handling before an internal candidate is shared. |

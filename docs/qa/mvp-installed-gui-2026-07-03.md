@@ -1,28 +1,31 @@
 # MVP Installed GUI QA Handoff - 2026-07-03
 
-Candidate commit: `26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`
+Candidate commit: `cf5b712d61b1aec4539066b258ab5cbddd525ffd`
 
-Workflow run: `28686171140`
+Workflow run: `28687518031`
 
 Artifact name:
-`c4lens-0.1.0-macos-universal-26e8e0432149b0d5d5e7e889c78a8001ab0a51d2`
+`c4lens-0.1.0-macos-universal-cf5b712d61b1aec4539066b258ab5cbddd525ffd`
+
+Artifact expiration: `2026-07-17T23:24:31Z`
+
+Artifact size: 24593691 bytes
 
 Status: ready for human installed-app interaction pass.
 
 ## Automated Gate Context
 
-- CI run `28686171140` passed and uploaded the expected macOS universal
-  artifact.
-- `npm run qa:installed-macos` passed locally against the release bundle. The
-  sandboxed terminal could not attach the DMG (`Device not configured`), so the
-  gate verified the packaged app fallback from the release bundle.
-- `npm run qa:first-run` passed locally for the disposable first-run CLI flow.
+- CI run `28687518031` uploaded the expected macOS universal artifact.
+- `npm run qa:current-ci-artifact -- cf5b712d61b1aec4539066b258ab5cbddd525ffd` verifies this run and
+  artifact metadata.
+- `npm run qa:release-candidate` remains the local pre-human-review gate for
+  first-run CLI QA, installed macOS artifact QA, and MVP docs contract checks.
 
 ## Human Interaction Checklist
 
-Use the CI artifact or a fresh local `npm run smoke:release` artifact, install
-from the DMG on a current supported macOS machine, then record results in
-`docs/mvp-manual-qa-template.md`.
+Download the CI artifact or rebuild locally with `npm run smoke:release`,
+install from the DMG on a current supported macOS machine, then record results
+in `docs/mvp-manual-qa-template.md`.
 
 | Workflow | Result | Notes |
 | --- | --- | --- |

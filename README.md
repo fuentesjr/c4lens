@@ -108,6 +108,8 @@ npm run qa:release-candidate
 npm run qa:first-run
 npm run qa:installed-macos
 npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
+npm run qa:current-ci-artifact -- <commit-sha>
+npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -140,6 +142,13 @@ gate.
 `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>` verifies that a CI
 run uploaded the expected versioned macOS artifact and that the artifact is
 still retained.
+
+`npm run qa:current-ci-artifact -- <commit-sha>` finds the successful `CI`
+workflow run for a pushed commit on the current branch and verifies its macOS
+artifact contract.
+
+`npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>` writes a dated
+installed-app GUI QA handoff from the CI artifact metadata.
 
 ## Reference Docs
 
