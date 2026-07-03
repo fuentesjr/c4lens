@@ -265,9 +265,14 @@ fn resolve_require(repo_root: &Path, target: &str) -> Option<String> {
 }
 
 fn resolve_ruby_path(repo_root: &Path, base: &Path) -> Option<String> {
+    let repo_root = repo_root.canonicalize().ok()?;
     for candidate in [base.to_path_buf(), base.with_extension("rb")] {
         if candidate.is_file() {
-            return relative_posix_path(repo_root, &candidate);
+            let resolved = candidate.canonicalize().ok()?;
+            if !resolved.starts_with(&repo_root) {
+                return None;
+            }
+            return relative_posix_path(&repo_root, &resolved);
         }
     }
     None

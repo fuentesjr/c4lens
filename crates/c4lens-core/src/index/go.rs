@@ -201,7 +201,12 @@ fn resolve_import(
 }
 
 fn first_go_file_in_dir(repo_root: &Path, path: &Path) -> Option<String> {
+    let repo_root = repo_root.canonicalize().ok()?;
     let directory = if path.is_dir() { path } else { path.parent()? };
+    let directory = directory.canonicalize().ok()?;
+    if !directory.starts_with(&repo_root) {
+        return None;
+    }
     let mut candidates = fs::read_dir(directory)
         .ok()?
         .filter_map(Result::ok)
@@ -217,7 +222,7 @@ fn first_go_file_in_dir(repo_root: &Path, path: &Path) -> Option<String> {
     candidates.sort();
     candidates
         .into_iter()
-        .find_map(|candidate| relative_posix_path(repo_root, &candidate))
+        .find_map(|candidate| relative_posix_path(&repo_root, &candidate))
 }
 
 fn go_module_name(repo_root: &Path) -> Option<String> {

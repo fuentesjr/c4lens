@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use assert_cmd::Command;
 use c4lens_core::{acquire_repo_write_lock, repo_handle_from_path};
@@ -7,6 +7,20 @@ use serde_json::Value;
 mod support;
 
 use support::{cleanup, fresh_test_dir};
+
+fn generated_yaml_from_generate_scan(repo: &Path) -> String {
+    let assert = Command::cargo_bin("c4lens")
+        .expect("binary")
+        .args(["generate", "--scan", "--json", "--repo"])
+        .arg(repo)
+        .assert()
+        .success();
+    let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
+    payload["generatedYaml"]
+        .as_str()
+        .expect("generated yaml")
+        .to_string()
+}
 
 #[test]
 fn generate_does_not_write_without_write_flag() {
@@ -432,6 +446,128 @@ fn generate_scan_with_rust_super_imports_returns_generated_component_relationshi
     let payload: Value = serde_json::from_slice(&assert.get_output().stdout).expect("json output");
     let generated_yaml = payload["generatedYaml"].as_str().expect("generated yaml");
 
+    assert!(generated_yaml.contains("from: api"));
+    assert!(generated_yaml.contains("to: domain"));
+    assert!(generated_yaml.contains("description: Imports"));
+    assert_eq!(generated_yaml.matches("description: Imports").count(), 1);
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_scan_with_typescript_imports_returns_generated_component_relationships() {
+    let root = fresh_test_dir("generate-typescript-import-relationships");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/web")).expect("create web");
+    fs::create_dir_all(repo.join("src/domain")).expect("create domain");
+    fs::write(repo.join("package.json"), r#"{"name":"web-service"}"#)
+        .expect("write package manifest");
+    fs::write(
+        repo.join("src/web/index.ts"),
+        "import { Thing } from \"../domain\";\nexport function handle() {}\n",
+    )
+    .expect("write web source");
+    fs::write(
+        repo.join("src/domain/index.ts"),
+        "export interface Thing {}\n",
+    )
+    .expect("write domain source");
+
+    let generated_yaml = generated_yaml_from_generate_scan(&repo);
+
+    assert!(generated_yaml.contains("web:"));
+    assert!(generated_yaml.contains("domain:"));
+    assert!(generated_yaml.contains("from: web"));
+    assert!(generated_yaml.contains("to: domain"));
+    assert!(generated_yaml.contains("description: Imports"));
+    assert_eq!(generated_yaml.matches("description: Imports").count(), 1);
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_scan_with_python_imports_returns_generated_component_relationships() {
+    let root = fresh_test_dir("generate-python-import-relationships");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/api")).expect("create api");
+    fs::create_dir_all(repo.join("src/domain")).expect("create domain");
+    fs::write(
+        repo.join("pyproject.toml"),
+        "[project]\nname = \"python-service\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write pyproject manifest");
+    fs::write(
+        repo.join("src/api/service.py"),
+        "from src.domain import model\n\ndef handle():\n    pass\n",
+    )
+    .expect("write api source");
+    fs::write(repo.join("src/domain/__init__.py"), "").expect("write domain init");
+
+    let generated_yaml = generated_yaml_from_generate_scan(&repo);
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("domain:"));
+    assert!(generated_yaml.contains("from: api"));
+    assert!(generated_yaml.contains("to: domain"));
+    assert!(generated_yaml.contains("description: Imports"));
+    assert_eq!(generated_yaml.matches("description: Imports").count(), 1);
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_scan_with_ruby_requires_returns_generated_component_relationships() {
+    let root = fresh_test_dir("generate-ruby-import-relationships");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("app/web")).expect("create web");
+    fs::create_dir_all(repo.join("app/domain")).expect("create domain");
+    fs::write(repo.join("Gemfile"), "source \"https://rubygems.org\"\n").expect("write gemfile");
+    fs::write(
+        repo.join("app/web/service.rb"),
+        "require_relative \"../domain/model\"\nclass Service\nend\n",
+    )
+    .expect("write web source");
+    fs::write(repo.join("app/domain/model.rb"), "class Model\nend\n").expect("write domain source");
+
+    let generated_yaml = generated_yaml_from_generate_scan(&repo);
+
+    assert!(generated_yaml.contains("web:"));
+    assert!(generated_yaml.contains("domain:"));
+    assert!(generated_yaml.contains("from: web"));
+    assert!(generated_yaml.contains("to: domain"));
+    assert!(generated_yaml.contains("description: Imports"));
+    assert_eq!(generated_yaml.matches("description: Imports").count(), 1);
+
+    cleanup(root);
+}
+
+#[test]
+fn generate_scan_with_go_imports_returns_generated_component_relationships() {
+    let root = fresh_test_dir("generate-go-import-relationships");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("src/api")).expect("create api");
+    fs::create_dir_all(repo.join("src/domain")).expect("create domain");
+    fs::write(repo.join("go.mod"), "module example.com/repo\n\ngo 1.22\n")
+        .expect("write go manifest");
+    fs::write(
+        repo.join("src/api/main.go"),
+        "package api\n\nimport \"example.com/repo/src/domain\"\n\nfunc Handle() {}\n",
+    )
+    .expect("write api source");
+    fs::write(
+        repo.join("src/domain/model.go"),
+        "package domain\n\ntype Thing struct {}\n",
+    )
+    .expect("write domain source");
+
+    let generated_yaml = generated_yaml_from_generate_scan(&repo);
+
+    assert!(generated_yaml.contains("api:"));
+    assert!(generated_yaml.contains("domain:"));
     assert!(generated_yaml.contains("from: api"));
     assert!(generated_yaml.contains("to: domain"));
     assert!(generated_yaml.contains("description: Imports"));

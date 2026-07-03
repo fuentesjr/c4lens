@@ -77,7 +77,8 @@ npm run smoke:mvp
 
 `npm run smoke:mvp` creates a temporary repository and exercises the CLI MVP
 path: validate, scan, generate preview, generated overlay write, generated
-drift check, and the renderer E2E workflow tests.
+drift check, mixed-language import relationship generation, and the renderer
+E2E workflow tests.
 
 ## Reference Docs
 

@@ -528,7 +528,7 @@ pub struct RepoImportEdge {
     pub to_file: String,
 }
 
-pub fn list_internal_crate_import_edges(
+pub fn list_internal_import_edges(
     repo: &RepoHandle,
     index_path: Option<&Path>,
 ) -> Result<Vec<RepoImportEdge>, CommandError> {
@@ -545,7 +545,7 @@ pub fn list_internal_crate_import_edges(
     let mut statement = connection
         .prepare(
             r#"
-SELECT source_files.path, target_files.path
+SELECT DISTINCT source_files.path, target_files.path
 FROM imports
 JOIN files AS source_files ON source_files.id = imports.file_id
 JOIN files AS target_files
@@ -553,11 +553,6 @@ JOIN files AS target_files
  AND target_files.path = imports.target_path
 WHERE source_files.repo_id = ?1
   AND imports.kind = 'internal'
-  AND (
-    imports.target_module LIKE 'crate::%'
-    OR imports.target_module LIKE 'self::%'
-    OR imports.target_module LIKE 'super::%'
-  )
   AND imports.target_path IS NOT NULL
 ORDER BY source_files.path, target_files.path
 "#,
@@ -579,6 +574,13 @@ ORDER BY source_files.path, target_files.path
     }
 
     Ok(edges)
+}
+
+pub fn list_internal_crate_import_edges(
+    repo: &RepoHandle,
+    index_path: Option<&Path>,
+) -> Result<Vec<RepoImportEdge>, CommandError> {
+    list_internal_import_edges(repo, index_path)
 }
 
 pub fn default_index_path(repo: &RepoHandle) -> PathBuf {

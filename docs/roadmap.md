@@ -44,6 +44,9 @@ listed here are planned or deferred capabilities, not regressions.
 | Ruby scanner coverage | Implemented | The scanner extracts best-effort modules, classes, methods, constants, and require/require_relative edges for Ruby files. |
 | Go scanner coverage | Implemented | The scanner extracts best-effort structs, interfaces, functions, methods, constants, and import edges with `go.mod` module-prefix resolution. |
 | CLI binary contract | Implemented | The CLI crate now builds the MVP `c4lens` executable name and smoke/tests invoke that binary. |
+| Cross-language import relationship generation | Implemented | Generated component relationships now consume resolved internal imports from the full MVP language index, not only Rust crate imports. |
+| Multi-language generation regression coverage | Implemented | CLI generation tests cover import-derived relationships for TypeScript, Python, Ruby, Go, and Rust. |
+| Multi-language MVP smoke fixture | Implemented | `npm run smoke:mvp` now scans a mixed-language repo and checks generated import relationships across the MVP parser set. |
 
 ## Later Backlog
 

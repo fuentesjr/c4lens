@@ -219,11 +219,16 @@ fn resolve_module_specifier(repo_root: &Path, source_path: &str, target: &str) -
         return None;
     }
 
+    let repo_root = repo_root.canonicalize().ok()?;
     let source_dir = repo_root.join(source_path).parent()?.to_path_buf();
     let base = source_dir.join(target);
     for candidate in module_candidates(&base) {
         if candidate.is_file() {
-            return relative_posix_path(repo_root, &candidate);
+            let resolved = candidate.canonicalize().ok()?;
+            if !resolved.starts_with(&repo_root) {
+                return None;
+            }
+            return relative_posix_path(&repo_root, &resolved);
         }
     }
 

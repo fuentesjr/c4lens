@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::{list_internal_crate_import_edges, CommandError, Model, RepoHandle};
+use crate::{list_internal_import_edges, CommandError, Model, RepoHandle};
 
 pub const GENERATED_MODEL_PATH: &str = "c4/model.generated.yml";
 pub const SCHEMA_PATH: &str = "c4/schema.json";
@@ -276,7 +276,7 @@ fn build_scan_discovered_component_relationships(
     repo: &RepoHandle,
     generated_components: &[GeneratedComponentImportMetadata],
 ) -> Vec<crate::Relationship> {
-    let Ok(import_edges) = list_internal_crate_import_edges(repo, None) else {
+    let Ok(import_edges) = list_internal_import_edges(repo, None) else {
         return Vec::new();
     };
     if import_edges.is_empty() || generated_components.is_empty() {
