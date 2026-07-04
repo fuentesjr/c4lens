@@ -68,6 +68,7 @@ run before checking the artifact metadata. Once the artifact is selected,
 generate the installed-app handoff with:
 
 ```sh
+npm run qa:artifact-log -- <workflow-run-id> <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 npm run qa:manual-stub -- <workflow-run-id> <commit-sha>
 ```
@@ -86,6 +87,12 @@ Before handing the candidate to a human reviewer, verify the packet:
 
 ```sh
 npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>
+```
+
+To run the full CI candidate packet flow in one step:
+
+```sh
+npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>
 ```
 
 ## Version And Commit Verification

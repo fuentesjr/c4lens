@@ -112,14 +112,16 @@ For the current candidate handoff, use
 installed-app interaction pass.
 
 For the current candidate result record, use
-`docs/qa/mvp-manual-qa-6ad137f-2026-07-03.md`.
+`docs/qa/mvp-manual-qa-32b2f34-2026-07-03.md`.
 
 To regenerate the handoff from CI artifact metadata for a newer candidate, run:
 
 ```sh
+npm run qa:artifact-log -- <workflow-run-id> <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 npm run qa:manual-stub -- <workflow-run-id> <commit-sha>
 npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>
+npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>
 ```
 
 To create a disposable repository for manual MVP checks:

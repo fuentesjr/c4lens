@@ -84,10 +84,12 @@ handoff before installing:
 
 ```sh
 npm run qa:current-ci-artifact -- <commit-sha>
+npm run qa:artifact-log -- <workflow-run-id> <commit-sha>
 npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 npm run qa:manual-stub -- <workflow-run-id> <commit-sha>
 npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>
+npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>
 ```
 
 Launch the app in development or install the release candidate from the DMG:

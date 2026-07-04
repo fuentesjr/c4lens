@@ -109,10 +109,12 @@ npm run qa:first-run
 npm run qa:installed-macos
 npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
 npm run qa:current-ci-artifact -- <commit-sha>
+npm run qa:artifact-log -- <workflow-run-id> <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 npm run qa:manual-stub -- <workflow-run-id> <commit-sha>
 npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>
 npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>
+npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -150,6 +152,9 @@ still retained.
 workflow run for a pushed commit on the current branch and verifies its macOS
 artifact contract.
 
+`npm run qa:artifact-log -- <workflow-run-id> <commit-sha>` writes the CI
+artifact confirmation markdown from GitHub run and artifact metadata.
+
 `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>` writes a dated
 installed-app GUI QA handoff from the CI artifact metadata.
 
@@ -162,6 +167,10 @@ directory for installed-app QA.
 
 `npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>` checks that the
 artifact log, GUI handoff, manual QA stub, and prepared candidate bundle agree.
+
+`npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>` runs the whole
+candidate packet flow and leaves the internal MVP ready for the human
+installed-app pass.
 
 ## Reference Docs
 
