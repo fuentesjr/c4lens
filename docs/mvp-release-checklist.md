@@ -112,7 +112,7 @@ For the current candidate handoff, use
 installed-app interaction pass.
 
 For the current candidate result record, use
-`docs/qa/mvp-manual-qa-32b2f34-2026-07-03.md`.
+`docs/qa/mvp-manual-qa-dcba6e2-2026-07-03.md`.
 
 To regenerate the handoff from CI artifact metadata for a newer candidate, run:
 
