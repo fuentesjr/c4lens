@@ -86,6 +86,8 @@ Status: ready for human installed-app interaction pass.
 - CI run \`${runId}\` uploaded the expected macOS universal artifact.
 - \`npm run qa:current-ci-artifact -- ${commitSha}\` verifies this run and
   artifact metadata.
+- \`npm run qa:prepare-ci-candidate -- ${runId} ${commitSha}\` downloads and
+  verifies a local candidate bundle under \`target/mvp-candidates/\`.
 - \`npm run qa:release-candidate\` remains the local pre-human-review gate for
   first-run CLI QA, installed macOS artifact QA, and MVP docs contract checks.
 

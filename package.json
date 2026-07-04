@@ -19,6 +19,7 @@
     "qa:first-run": "bash scripts/qa_first_run_cli.sh",
     "qa:gui-handoff": "bash scripts/write_mvp_installed_gui_handoff.sh",
     "qa:installed-macos": "bash scripts/qa_installed_macos_artifact.sh",
+    "qa:prepare-ci-candidate": "bash scripts/prepare_ci_candidate.sh",
     "qa:release-candidate": "bash scripts/qa_release_candidate.sh",
     "smoke:release": "bash scripts/smoke_release.sh",
     "smoke:mvp": "bash scripts/smoke_mvp.sh",

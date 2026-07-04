@@ -1,23 +1,25 @@
 # MVP Installed GUI QA Handoff - 2026-07-03
 
-Candidate commit: `cf5b712d61b1aec4539066b258ab5cbddd525ffd`
+Candidate commit: `3791a9a75ab1232bab1c61741980ab1ac97ba4de`
 
-Workflow run: `28687518031`
+Workflow run: `28688315327`
 
 Artifact name:
-`c4lens-0.1.0-macos-universal-cf5b712d61b1aec4539066b258ab5cbddd525ffd`
+`c4lens-0.1.0-macos-universal-3791a9a75ab1232bab1c61741980ab1ac97ba4de`
 
-Artifact expiration: `2026-07-17T23:24:31Z`
+Artifact expiration: `2026-07-17T23:54:57Z`
 
-Artifact size: 24593691 bytes
+Artifact size: 24593564 bytes
 
 Status: ready for human installed-app interaction pass.
 
 ## Automated Gate Context
 
-- CI run `28687518031` uploaded the expected macOS universal artifact.
-- `npm run qa:current-ci-artifact -- cf5b712d61b1aec4539066b258ab5cbddd525ffd` verifies this run and
+- CI run `28688315327` uploaded the expected macOS universal artifact.
+- `npm run qa:current-ci-artifact -- 3791a9a75ab1232bab1c61741980ab1ac97ba4de` verifies this run and
   artifact metadata.
+- `npm run qa:prepare-ci-candidate -- 28688315327 3791a9a75ab1232bab1c61741980ab1ac97ba4de` downloads and
+  verifies a local candidate bundle under `target/mvp-candidates/`.
 - `npm run qa:release-candidate` remains the local pre-human-review gate for
   first-run CLI QA, installed macOS artifact QA, and MVP docs contract checks.
 

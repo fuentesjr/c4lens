@@ -110,6 +110,7 @@ npm run qa:installed-macos
 npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>
 npm run qa:current-ci-artifact -- <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
+npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>
 ```
 
 Create a disposable mixed-language repo for manual MVP checks:
@@ -149,6 +150,10 @@ artifact contract.
 
 `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>` writes a dated
 installed-app GUI QA handoff from the CI artifact metadata.
+
+`npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>` downloads
+the verified CI artifact, verifies the bundle, and prepares a local candidate
+directory for installed-app QA.
 
 ## Reference Docs
 

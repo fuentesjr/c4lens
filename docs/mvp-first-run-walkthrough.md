@@ -84,6 +84,7 @@ handoff before installing:
 
 ```sh
 npm run qa:current-ci-artifact -- <commit-sha>
+npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
 ```
 
