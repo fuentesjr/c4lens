@@ -65,6 +65,8 @@ if (!Number.isFinite(artifact.size_in_bytes) || artifact.size_in_bytes <= 0) {
 const outputDate =
   path.basename(outputPath).match(/\d{4}-\d{2}-\d{2}/)?.[0] ??
   new Date().toISOString().slice(0, 10);
+const shortSha = commitSha.slice(0, 7);
+const manualQaPath = `docs/qa/mvp-manual-qa-${shortSha}-${outputDate}.md`;
 
 const markdown = `# MVP Installed GUI QA Handoff - ${outputDate}
 
@@ -95,7 +97,7 @@ Status: ready for human installed-app interaction pass.
 
 Download the CI artifact or rebuild locally with \`npm run smoke:release\`,
 install from the DMG on a current supported macOS machine, then record results
-in \`docs/mvp-manual-qa-template.md\`.
+in \`${manualQaPath}\`.
 
 | Workflow | Result | Notes |
 | --- | --- | --- |

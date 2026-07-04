@@ -104,7 +104,7 @@ require_contains docs/mvp-release-checklist.md "npm run qa:prepare-ci-candidate 
 require_contains docs/mvp-release-checklist.md "npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>"
 require_contains docs/mvp-release-checklist.md "npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>"
 require_contains docs/mvp-release-checklist.md "docs/qa/mvp-installed-gui-2026-07-03.md"
-require_contains docs/mvp-release-checklist.md "docs/qa/mvp-manual-qa-dcba6e2-2026-07-03.md"
+require_contains docs/mvp-release-checklist.md "docs/qa/mvp-manual-qa-e9ce78b-2026-07-03.md"
 require_contains docs/mvp-release-notes.md "Version: 0.1.0"
 require_contains docs/mvp-release-notes.md "c4lens init"
 require_contains docs/mvp-release-notes.md "c4lens schema"
@@ -184,6 +184,7 @@ require_contains scripts/qa_release_candidate.sh "MVP release-candidate QA passe
 require_contains scripts/qa_ci_artifact_contract.sh "CI artifact contract passed"
 require_contains scripts/qa_current_ci_artifact.sh "CI run found:"
 require_contains scripts/write_mvp_installed_gui_handoff.sh "Status: ready for human installed-app interaction pass."
+require_contains scripts/write_mvp_installed_gui_handoff.sh 'const manualQaPath = `docs/qa/mvp-manual-qa-${shortSha}-${outputDate}.md`;'
 require_contains scripts/prepare_ci_candidate.sh "Prepared CI candidate artifact"
 require_contains scripts/write_mvp_manual_qa_stub.sh "Human installed-app GUI pass completed."
 require_contains scripts/check_mvp_candidate_packet.sh "MVP candidate packet check passed"
@@ -205,8 +206,11 @@ require_contains docs/qa/ci-artifact-32b2f34-2026-07-03.md "28689213998"
 require_contains docs/qa/ci-artifact-32b2f34-2026-07-03.md "npm run qa:ready-for-human -- 28689213998 32b2f348570035db61cb57a6a6cb249cdaff233d"
 require_contains docs/qa/ci-artifact-dcba6e2-2026-07-03.md "28691766065"
 require_contains docs/qa/ci-artifact-dcba6e2-2026-07-03.md "npm run qa:ready-for-human -- 28691766065 dcba6e204cfd4450b6fd1753ee368ec34ddc58d9"
+require_contains docs/qa/ci-artifact-e9ce78b-2026-07-03.md "28692429869"
+require_contains docs/qa/ci-artifact-e9ce78b-2026-07-03.md "npm run qa:ready-for-human -- 28692429869 e9ce78be93a79370e80064f94ab91bfbb9a6fff2"
 require_contains docs/qa/mvp-installed-gui-2026-07-03.md "ready for human installed-app interaction pass"
-require_contains docs/qa/mvp-installed-gui-2026-07-03.md "dcba6e204cfd4450b6fd1753ee368ec34ddc58d9"
+require_contains docs/qa/mvp-installed-gui-2026-07-03.md "e9ce78be93a79370e80064f94ab91bfbb9a6fff2"
+require_contains docs/qa/mvp-installed-gui-2026-07-03.md "docs/qa/mvp-manual-qa-e9ce78b-2026-07-03.md"
 require_contains docs/qa/mvp-installed-gui-2026-07-03.md "Export SVG/PDF/PNG succeeds"
 require_contains docs/qa/mvp-manual-qa-3791a9a-2026-07-03.md "Human installed-app GUI pass completed."
 require_contains docs/qa/mvp-manual-qa-3791a9a-2026-07-03.md "Export SVG/PDF/PNG succeeds"
@@ -216,6 +220,8 @@ require_contains docs/qa/mvp-manual-qa-32b2f34-2026-07-03.md "Human installed-ap
 require_contains docs/qa/mvp-manual-qa-32b2f34-2026-07-03.md "npm run qa:candidate-packet -- 28689213998 32b2f348570035db61cb57a6a6cb249cdaff233d"
 require_contains docs/qa/mvp-manual-qa-dcba6e2-2026-07-03.md "- [ ] Human installed-app GUI pass completed."
 require_contains docs/qa/mvp-manual-qa-dcba6e2-2026-07-03.md "npm run qa:candidate-packet -- 28691766065 dcba6e204cfd4450b6fd1753ee368ec34ddc58d9"
+require_contains docs/qa/mvp-manual-qa-e9ce78b-2026-07-03.md "- [ ] Human installed-app GUI pass completed."
+require_contains docs/qa/mvp-manual-qa-e9ce78b-2026-07-03.md "npm run qa:candidate-packet -- 28692429869 e9ce78be93a79370e80064f94ab91bfbb9a6fff2"
 
 if [[ "$failures" -ne 0 ]]; then
   exit 1
