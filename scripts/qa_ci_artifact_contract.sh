@@ -20,7 +20,7 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 69
 fi
 
-tmp_json="$(mktemp "${TMPDIR:-/tmp}/c4lens-ci-artifacts.XXXXXX.json")"
+tmp_json="$(mktemp "${TMPDIR:-/tmp}/c4lens-ci-artifacts.XXXXXX")"
 trap 'rm -f "$tmp_json"' EXIT
 
 gh api "repos/fuentesjr/c4lens/actions/runs/${run_id}/artifacts" >"$tmp_json"

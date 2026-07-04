@@ -12,7 +12,7 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 69
 fi
 
-tmp_json="$(mktemp "${TMPDIR:-/tmp}/c4lens-ci-runs.XXXXXX.json")"
+tmp_json="$(mktemp "${TMPDIR:-/tmp}/c4lens-ci-runs.XXXXXX")"
 trap 'rm -f "$tmp_json"' EXIT
 
 gh run list \

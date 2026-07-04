@@ -69,6 +69,7 @@ generate the installed-app handoff with:
 
 ```sh
 npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>
+npm run qa:manual-stub -- <workflow-run-id> <commit-sha>
 ```
 
 Prepare a verified CI candidate locally before the human installed-app pass:
@@ -80,6 +81,12 @@ npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>
 By default this writes to `target/mvp-candidates/`, verifies the downloaded
 bundle with `npm run package:verify` semantics, and runs installed macOS
 artifact QA on macOS.
+
+Before handing the candidate to a human reviewer, verify the packet:
+
+```sh
+npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>
+```
 
 ## Version And Commit Verification
 

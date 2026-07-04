@@ -22,45 +22,54 @@ Current batch: none.
 
 Last completed batch:
 
-- Pushed prior local release-candidate commit `3791a9a` upstream.
-- Confirmed pushed CI run `28688315327` passed for
-  `3791a9a75ab1232bab1c61741980ab1ac97ba4de` and recorded
-  `docs/qa/ci-artifact-3791a9a-2026-07-03.md`.
-- Added `npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>` to
-  download the verified CI artifact, verify the bundle, and prepare a local
-  candidate directory under `target/mvp-candidates/`.
-- Refreshed `docs/qa/mvp-installed-gui-2026-07-03.md` and added
-  `docs/qa/mvp-manual-qa-3791a9a-2026-07-03.md` for the remaining human
-  installed-app GUI pass.
-- Total elapsed task time: 11m 19s, from 2026-07-03 16:50:06 PDT to
-  2026-07-03 17:01:25 PDT.
+- Pushed prior local release-candidate commit `6ad137f` upstream.
+- Confirmed pushed CI run `28688677805` passed for
+  `6ad137f5633b045ebdd41a2c29a76da426db83c3` and recorded
+  `docs/qa/ci-artifact-6ad137f-2026-07-03.md`.
+- Added `npm run qa:manual-stub -- <workflow-run-id> <commit-sha>` to generate
+  the dated manual QA result stub from CI artifact metadata.
+- Added `npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>` to
+  verify the artifact log, GUI handoff, manual QA stub, and prepared candidate
+  bundle agree.
+- Refreshed `docs/qa/mvp-installed-gui-2026-07-03.md` and generated
+  `docs/qa/mvp-manual-qa-6ad137f-2026-07-03.md` for the current candidate.
+- Fixed the GitHub-backed QA scripts to use BSD-safe `mktemp` templates without
+  suffix collisions.
+- Total elapsed task time: 16m 07s, from 2026-07-03 17:04:05 PDT to
+  2026-07-03 17:20:12 PDT.
 
 Verification status:
 
-- `gh run watch 28688315327 --repo fuentesjr/c4lens --exit-status`: passed.
+- `gh run watch 28688677805 --repo fuentesjr/c4lens --exit-status`: passed.
 - `npm run qa:release-candidate`: passed.
 - `npm run qa:current-ci-artifact --
-  3791a9a75ab1232bab1c61741980ab1ac97ba4de`: passed; artifact
-  `c4lens-0.1.0-macos-universal-3791a9a75ab1232bab1c61741980ab1ac97ba4de`
-  expires `2026-07-17T23:54:57Z` and is 24593564 bytes.
-- `npm run qa:prepare-ci-candidate -- 28688315327
-  3791a9a75ab1232bab1c61741980ab1ac97ba4de`: passed; prepared bundle under
-  `target/mvp-candidates/c4lens-0.1.0-macos-universal-3791a9a75ab1232bab1c61741980ab1ac97ba4de`.
-- `npm run qa:gui-handoff -- 28688315327
-  3791a9a75ab1232bab1c61741980ab1ac97ba4de
+  6ad137f5633b045ebdd41a2c29a76da426db83c3`: passed; artifact
+  `c4lens-0.1.0-macos-universal-6ad137f5633b045ebdd41a2c29a76da426db83c3`
+  expires `2026-07-18T00:09:19Z` and is 24593604 bytes.
+- `npm run qa:prepare-ci-candidate -- 28688677805
+  6ad137f5633b045ebdd41a2c29a76da426db83c3`: passed; prepared bundle under
+  `target/mvp-candidates/c4lens-0.1.0-macos-universal-6ad137f5633b045ebdd41a2c29a76da426db83c3`.
+- `npm run qa:gui-handoff -- 28688677805
+  6ad137f5633b045ebdd41a2c29a76da426db83c3
   docs/qa/mvp-installed-gui-2026-07-03.md`: passed.
+- `npm run qa:manual-stub -- 28688677805
+  6ad137f5633b045ebdd41a2c29a76da426db83c3`: passed.
+- `npm run qa:candidate-packet -- 28688677805
+  6ad137f5633b045ebdd41a2c29a76da426db83c3`: passed.
 - `npm run check:all`: passed.
 - `bash -n scripts/qa_current_ci_artifact.sh
-  scripts/write_mvp_installed_gui_handoff.sh scripts/prepare_ci_candidate.sh`:
+  scripts/write_mvp_installed_gui_handoff.sh scripts/prepare_ci_candidate.sh
+  scripts/write_mvp_manual_qa_stub.sh scripts/check_mvp_candidate_packet.sh`:
   passed.
 - `git diff --check`: passed.
 - Human installed-app GUI pass: not run; use
-  `docs/qa/mvp-manual-qa-3791a9a-2026-07-03.md`.
+  `docs/qa/mvp-manual-qa-6ad137f-2026-07-03.md`.
 
 ## Recent Batches
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| `6ad137f` | Current MVP CI candidate preparation | Added CI candidate preparation, recorded `3791a9a` artifact metadata, prepared the current candidate locally, and passed `npm run check:all`. |
 | `3791a9a` | Current CI artifact handoff | Added current-commit CI artifact verification, GUI handoff generation, recorded `cf5b712` artifact metadata, and passed `npm run check:all`. |
 | `cf5b712` | Release-candidate QA checks | Added `npm run qa:release-candidate`, CI artifact metadata verification, installed-GUI handoff logging, docs wiring, and passed `npm run check:all`. |
 | `56bec41` | Installed macOS artifact QA | Added `npm run qa:installed-macos`, recorded automated installed-artifact QA, and captured CI artifact metadata for run `28686171140`. |
@@ -99,18 +108,20 @@ Useful targeted checks:
 - `npm run qa:current-ci-artifact -- <commit-sha>`
 - `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>`
 - `npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>`
+- `npm run qa:manual-stub -- <workflow-run-id> <commit-sha>`
+- `npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>`
 
 ## Next Candidate Tasks
 
 Pick from this list when the user asks for the next MVP task batch:
 
 - Run the human installed-app GUI pass and fill out
-  `docs/qa/mvp-manual-qa-3791a9a-2026-07-03.md`.
+  `docs/qa/mvp-manual-qa-6ad137f-2026-07-03.md`.
 - Resolve blocker or high-severity findings from the installed desktop pass
   using `docs/mvp-qa-triage.md`.
 - Use the prepared candidate under `target/mvp-candidates/`, or use the CI
-  artifact from run `28688315327` while it is retained. Rebuild locally with
-  `npm run smoke:release` after `2026-07-17T23:54:57Z`.
+  artifact from run `28688677805` while it is retained. Rebuild locally with
+  `npm run smoke:release` after `2026-07-18T00:09:19Z`.
 - Push this task-batch commit before expecting CI artifact coverage for these
   script/doc updates.
 - If the candidate needs to be shared beyond internal reviewers, start the
