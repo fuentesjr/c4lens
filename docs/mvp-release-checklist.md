@@ -108,11 +108,11 @@ end-to-end validation path, and record formal candidate results with the
 [MVP QA triage](mvp-qa-triage.md).
 
 For the current candidate handoff, use
-`docs/qa/mvp-installed-gui-2026-07-03.md` to drive and record the remaining
+`docs/qa/mvp-installed-gui-2026-07-05.md` to drive and record the remaining
 installed-app interaction pass.
 
 For the current candidate result record, use
-`docs/qa/mvp-manual-qa-243b8b1-2026-07-03.md`.
+`docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md`.
 
 To regenerate the handoff from CI artifact metadata for a newer candidate, run:
 
