@@ -1,0 +1,59 @@
+# c4/model.yml
+# Authored C4 model for c4lens.
+# yaml-language-server: $schema=./schema.json
+name: 'c4lens'
+actors:
+  developer:
+    name: Developer
+    description: Navigates and edits the C4 model of a local repository.
+systems:
+  c4lens:
+    name: c4lens
+    description: Local-first desktop app and CLI for navigating and generating C4 models.
+    containers:
+      core:
+        name: c4lens-core
+        tech: Rust
+        kind: service
+        code: crates/c4lens-core/src
+        description: Model loading, validation, scanning, indexing, and generation.
+      cli:
+        name: c4lens-cli
+        tech: Rust
+        kind: app
+        code: crates/c4lens-cli/src
+        description: Headless command-line entrypoint (init, schema, doctor, validate, scan, generate).
+      desktop_shell:
+        name: c4lens-tauri
+        tech: Rust / Tauri
+        kind: app
+        code: crates/c4lens-tauri/src
+        description: Tauri command/event layer, file watching, and native desktop shell.
+      renderer:
+        name: Renderer
+        tech: React / Vite
+        kind: app
+        code: app/src
+        description: Navigation, derived C4 views, ELK layout, and canvas rendering.
+      index_store:
+        name: Symbol Index
+        tech: SQLite
+        kind: store
+        description: Indexed files, symbols, and import edges per repository.
+relationships:
+  - from: developer
+    to: renderer
+    description: Navigates and reviews generated changes
+  - from: cli
+    to: core
+    description: Invokes validation, scanning, and generation
+  - from: desktop_shell
+    to: core
+    description: Invokes validation, scanning, and generation
+  - from: renderer
+    to: desktop_shell
+    description: Calls Tauri commands and consumes events
+    tech: IPC
+  - from: core
+    to: index_store
+    description: Reads and writes indexed symbols and imports

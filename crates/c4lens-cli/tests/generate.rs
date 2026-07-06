@@ -545,6 +545,53 @@ fn generate_scan_with_ruby_requires_returns_generated_component_relationships() 
 }
 
 #[test]
+fn generate_scan_on_autoloaded_rails_shaped_repo_is_not_edgeless() {
+    // Rails apps autoload: no require/require_relative edges exist, so the
+    // generated model must still get relationships from manifest dependencies
+    // and containers from compose services (including the .yaml spelling).
+    let root = fresh_test_dir("generate-rails-shaped-realism");
+    let repo = root.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    fs::create_dir_all(repo.join("app/models")).expect("create models");
+    fs::create_dir_all(repo.join("app/controllers")).expect("create controllers");
+    fs::write(
+        repo.join("Gemfile"),
+        "source \"https://rubygems.org\"\ngem \"rails\", \"~> 7.1\"\ngem \"pg\"\ngem \"redis\"\n",
+    )
+    .expect("write gemfile");
+    fs::write(
+        repo.join("docker-compose.yaml"),
+        "services:\n  web:\n    image: rails\n  db:\n    image: postgres\n",
+    )
+    .expect("write compose manifest");
+    fs::write(
+        repo.join("app/models/user.rb"),
+        "class User < ApplicationRecord\nend\n",
+    )
+    .expect("write model");
+    fs::write(
+        repo.join("app/controllers/users_controller.rb"),
+        "class UsersController < ApplicationController\nend\n",
+    )
+    .expect("write controller");
+
+    let generated_yaml = generated_yaml_from_generate_scan(&repo);
+
+    assert!(generated_yaml.contains("tech: Ruby on Rails"));
+    assert!(generated_yaml.contains("models:"));
+    assert!(generated_yaml.contains("controllers:"));
+    assert!(generated_yaml.contains("postgres:"));
+    assert!(generated_yaml.contains("redis:"));
+    assert!(generated_yaml.contains("kind: store"));
+    assert!(generated_yaml.contains("web:"));
+    assert!(generated_yaml.contains("db:"));
+    assert!(generated_yaml.contains("description: Uses postgres"));
+    assert!(generated_yaml.contains("description: Uses redis"));
+
+    cleanup(root);
+}
+
+#[test]
 fn generate_scan_with_go_imports_returns_generated_component_relationships() {
     let root = fresh_test_dir("generate-go-import-relationships");
     let repo = root.join("repo");

@@ -2,93 +2,72 @@
 
 Last updated: 2026-07-05
 
-This file is the working tracker for MVP progress. Use it with
-`docs/roadmap.md`, `docs/mvp-release-checklist.md`, and
+This file is the working tracker for execution state across task batches. Use
+it with `docs/roadmap.md`, `docs/mvp-release-checklist.md`, and
 `docs/mvp-release-notes.md`: the docs describe product/release contracts; this
-file tracks execution state across task batches.
+file tracks execution state and next-batch selection.
 
 ## Current Status
 
 - MVP feature scope: implemented.
-- Current workstream: internal macOS MVP release-candidate hardening.
+- Current workstream: generation quality (code→model inference), validated
+  against real-shaped repositories and this repository's own `c4/model.yml`.
+- Release-process workstream: frozen as of 2026-07-05 (see Course Correction).
 - Branch: `main`.
 - Push status: report in the final response for each completed batch.
-- Release target: unsigned universal macOS app plus DMG for internal
-  validation.
+- Blocking release gate: human installed-app GUI pass on the `7e14f0a`
+  candidate (unrun since 2026-07-03).
+
+## Course Correction (2026-07-05)
+
+A whole-project review found the release-QA automation had become a
+self-feeding loop (every packet-refresh commit invalidated its own packet)
+while the product differentiator — code→model generation — remained the
+thinnest part of the product and had never been exercised on a real-shaped or
+this repository. Decisions:
+
+1. **Freeze release-process work.** The QA packet tooling is complete. Do not
+   add QA automation, and do not refresh candidate packets for commits that
+   only change docs, scripts, or generation internals. The `7e14f0a` candidate
+   stays the human-QA target even though `main` has moved past it.
+2. **Run the human GUI pass** against the existing prepared candidate instead
+   of regenerating packets first.
+3. **Redirect effort to generation quality.** Track items in the roadmap's
+   "Generation Quality" section; select batches from there.
+4. **Dogfood.** The repo now carries its own `c4/model.yml` and generated
+   overlay; regressions in self-generation are findings, not noise.
 
 ## In Flight
 
 Current batch: none.
 
-Last completed batch:
+Last completed batch (generation quality 1, 2026-07-05):
 
-- Pushed prior local current-packet commit `7e14f0a` upstream.
-- Used agenticons (`planner`, `helper_worker`, `doc_reviewer`, and `reviewer`)
-  to select the next release tasks, audit stale current-candidate references,
-  and review the final diff.
-- Confirmed pushed CI run `28694068981` passed for
-  `7e14f0a68a8b94e25087f58c8f9d7ec103f6317d` and recorded
-  `docs/qa/ci-artifact-7e14f0a-2026-07-05.md`.
-- Artifact
-  `c4lens-0.1.0-macos-universal-7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`
-  expires `2026-07-18T03:56:31Z` and is 24593645 bytes.
-- Refreshed the current-head ready-for-human packet for `7e14f0a` after the
-  upstream CI artifact was uploaded.
-- Generated `docs/qa/mvp-installed-gui-2026-07-05.md` and
-  `docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md` for the current candidate.
-- Updated the release checklist, roadmap, and MVP docs contract checks so the
-  live current-candidate references point at `7e14f0a` while older packet docs
-  remain historical records. The current manual QA check still requires the
-  human GUI pass checkbox to remain unchecked.
-- Hardened the candidate-packet check so a checked human GUI pass box, filled
-  `Pass`/`Fail` GUI rows, or missing expected `Not run` GUI rows cannot satisfy
-  the current packet gate.
-- Prepared local candidate paths under
-  `target/mvp-candidates/c4lens-0.1.0-macos-universal-7e14f0a68a8b94e25087f58c8f9d7ec103f6317d/`.
-- Human installed-app GUI pass remains the only unrun candidate gate; record it
-  in `docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md`. Manual-finding triage is
-  not started because the human GUI pass has not produced findings yet.
-- Total elapsed task time: 8m 28s, from 2026-07-05 20:49:32 PDT to
-  2026-07-05 20:58:00 PDT.
+- Added datastore/external-system dependency detection for Gemfile,
+  Cargo.toml, go.mod, pyproject.toml, and requirements.txt (previously
+  package.json only), sharing the existing store/external generation path.
+- Compose service detection now accepts `docker-compose.yml`,
+  `docker-compose.yaml`, `compose.yml`, and `compose.yaml`.
+- Added a Rails-shaped realism regression: an autoloaded (require-free) Rails
+  repo must generate stores, compose services, and dependency relationships
+  instead of an edgeless model (`generate_scan_on_autoloaded_rails_shaped_repo_is_not_edgeless`).
+- Dogfooded c4lens on itself: authored `c4/model.yml` (core, cli, desktop
+  shell, renderer, symbol index store) plus generated overlay; `c4lens doctor`
+  reports ready.
+- Dogfood findings recorded as roadmap items: workspace members are not
+  detected as containers (root workspace manifest yields one component-less
+  `code: .` container), and same-named containers get numeric collision slugs
+  (`c4lens_2`, `c4lens_3`).
 
 Verification status:
 
-- `git push`: passed; pushed `7e14f0a` to `origin/main`.
-- `gh run view 28694068981 --repo fuentesjr/c4lens --json status,conclusion,jobs,url`:
-  passed; `Check` and `Package macOS` completed successfully.
-- `npm run qa:ready-for-human -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d 2026-07-05`: passed; generated and checked the
-  full human QA packet.
-- `npm run qa:release-candidate --
-  target/mvp-candidates/c4lens-0.1.0-macos-universal-7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`:
+- `cargo test -p c4lens-core generation`: passed (17 tests, including the new
+  per-ecosystem dependency-target and compose-extension tests).
+- `cargo test -p c4lens-cli --test generate`: new Rails-shaped realism test
   passed.
-- `npm run qa:current-ci-artifact --
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`: passed through the
-  ready-for-human command; artifact
-  `c4lens-0.1.0-macos-universal-7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`
-  expires `2026-07-18T03:56:31Z` and is 24593645 bytes.
-- `npm run qa:artifact-log -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`: passed through the
-  ready-for-human command; recorded
-  `docs/qa/ci-artifact-7e14f0a-2026-07-05.md`.
-- `npm run qa:prepare-ci-candidate -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`: passed; prepared bundle under
-  `target/mvp-candidates/c4lens-0.1.0-macos-universal-7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`.
-- `npm run qa:gui-handoff -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d
-  docs/qa/mvp-installed-gui-2026-07-05.md`: passed.
-- `npm run qa:manual-stub -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d`: passed through the
-  ready-for-human command.
-- `npm run qa:candidate-packet -- 28694068981
-  7e14f0a68a8b94e25087f58c8f9d7ec103f6317d 2026-07-05`: passed through the
-  ready-for-human command and again after the unchecked-GUI-pass hardening.
-- `npm run check:mvp-docs`: passed.
-- `npm run check:all`: passed.
-- `bash -n scripts/check_mvp_candidate_packet.sh scripts/check_mvp_docs.sh
-  scripts/write_mvp_installed_gui_handoff.sh
-  scripts/write_mvp_manual_qa_stub.sh`: passed.
-- `git diff --check`: passed.
+- `npm run check:all`: passed after `cargo fmt`.
+- `c4lens init/generate --scan --write/validate/doctor` on this repository:
+  passed; `doctor` reports ready.
 - Human installed-app GUI pass: not run; use
   `docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md`.
 
@@ -96,6 +75,7 @@ Verification status:
 
 | Commit | Batch | Result |
 | --- | --- | --- |
+| (pending) | Course correction + generation quality 1 | Froze release-process automation, added multi-ecosystem datastore detection, compose `.yaml` support, Rails-shaped realism gate, and self-model dogfood. |
 | `7e14f0a` | Current-head ready-for-human packet refresh | Pushed the candidate-packet commit, confirmed CI run `28694068981`, regenerated the current packet for `7e14f0a`, and left only the human installed-app GUI pass. |
 | `243b8b1` | Current-head ready-for-human packet refresh | Pushed the current-packet commit, confirmed CI run `28693651191`, regenerated the current packet for `243b8b1`, hardened the unchecked and unfilled human GUI gate, and left only the human installed-app GUI pass. |
 | `e9ce78b` | Current-head ready-for-human packet refresh | Pushed the current-packet commit, confirmed CI run `28692429869`, regenerated the current packet for `e9ce78b`, and left only the human installed-app GUI pass. |
@@ -114,11 +94,6 @@ Verification status:
 | `132fbdd` | MVP release artifacts | Added CLI/app version visibility and macOS `release-manifest.json` generation/verification. |
 | `f4440ac` | MVP release readiness checks | Added MVP release notes, release metadata checks, and reusable demo repo fixture. |
 | `8d9d051` | MVP PDF export support | Added PDF export across renderer, IPC, backend, tests, and docs. |
-| `9476b1e` | MVP release readiness hardening | Continued packaging/release readiness before the release-notes batch. |
-| `87771d3` | MVP readiness workflow polish | Continued smoke/workflow hardening before release packaging. |
-| `a65a720` | MVP release packaging gate | Added macOS packaging/release gate groundwork. |
-| `bdc729e` | Cross-language generation | Generated relationships from cross-language internal imports. |
-| `7a61245` | MVP language indexing | Expanded MVP indexing coverage for TypeScript/JavaScript, Ruby, Rust, Go, and Python. |
 
 ## Release Gates
 
@@ -130,36 +105,38 @@ Required before sharing an internal MVP candidate:
 
 Useful targeted checks:
 
-- `cargo test -p c4lens-cli --test init`
-- `cargo test -p c4lens-cli --test doctor`
+- `cargo test -p c4lens-core generation`
+- `cargo test -p c4lens-cli --test generate`
 - `npm run check:release-metadata`
 - `npm run check:mvp-docs`
 - `npm run package:verify`
 - `npm run qa:release-candidate`
-- `npm run qa:ci-artifact -- <workflow-run-id> <commit-sha>`
-- `npm run qa:current-ci-artifact -- <commit-sha>`
-- `npm run qa:artifact-log -- <workflow-run-id> <commit-sha>`
-- `npm run qa:gui-handoff -- <workflow-run-id> <commit-sha>`
-- `npm run qa:prepare-ci-candidate -- <workflow-run-id> <commit-sha>`
-- `npm run qa:manual-stub -- <workflow-run-id> <commit-sha>`
-- `npm run qa:candidate-packet -- <workflow-run-id> <commit-sha>`
-- `npm run qa:ready-for-human -- <workflow-run-id> <commit-sha>`
+
+The full `qa:*` packet command set remains available (see README) but is
+frozen: use it only when a new candidate build is actually being prepared for
+human QA, never to refresh packets for doc/script-only commits.
 
 ## Next Candidate Tasks
 
-Pick from this list when the user asks for the next MVP task batch:
+Pick from this list when the user asks for the next task batch:
 
-- Run the human installed-app GUI pass and fill out
-  `docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md`.
-- Resolve blocker or high-severity findings from the installed desktop pass
-  using `docs/mvp-qa-triage.md`.
-- Use the prepared candidate under `target/mvp-candidates/`, or use the CI
-  artifact from run `28694068981` while it is retained. Rebuild locally with
-  `npm run smoke:release` after `2026-07-18T03:56:31Z`.
-- Push this task-batch commit before expecting CI artifact coverage for these
-  script/doc updates.
-- If the candidate needs to be shared beyond internal reviewers, start the
-  signed/notarized follow-up from `docs/signing-notarization.md`.
+1. **Human installed-app GUI pass** (blocking, human-only): use the prepared
+   candidate under `target/mvp-candidates/` or the CI artifact from run
+   `28694068981` (retained until `2026-07-18T03:56:31Z`); record results in
+   `docs/qa/mvp-manual-qa-7e14f0a-2026-07-05.md` and triage findings via
+   `docs/mvp-qa-triage.md`. Do not refresh the packet first.
+2. **Rails constant-reference relationship inference**: port the
+   `tmp/generation-spike` heuristics into `c4lens-core` — record cross-file
+   constant references (and ActiveRecord associations) as internal import
+   edges so autoloaded Ruby repos generate real component relationships.
+3. **Workspace member containers** (dogfood finding): detect Cargo workspace
+   members and package.json workspaces as containers so c4lens's own model
+   shows core/cli/tauri instead of one component-less `code: .` container.
+4. **Generated container naming on collisions** (dogfood finding): replace
+   numeric collision slugs (`c4lens_2`, `c4lens_3`) with tech- or
+   path-qualified names.
+5. Signed/notarized follow-up from `docs/signing-notarization.md` only when a
+   candidate needs to be shared beyond internal reviewers.
 
 ## Known Non-Blocking MVP Limits
 
@@ -173,8 +150,11 @@ Pick from this list when the user asks for the next MVP task batch:
 
 ## Tracker Rules
 
-- Update this file at the start or end of every MVP task batch.
+- Update this file at the start or end of every task batch.
 - Keep `In Flight` accurate before a commit.
 - Move completed batch details into `Recent Batches` after commit.
-- Keep roadmap feature status in `docs/roadmap.md`; use this file for execution
-  status and next-batch selection.
+- Keep roadmap feature status in `docs/roadmap.md`; use this file for
+  execution status and next-batch selection.
+- Do not refresh candidate packets or add QA automation while the
+  release-process freeze holds; packet work resumes only when a new candidate
+  build is prepared for human QA.

@@ -146,7 +146,7 @@ pub fn build_minimal_generated_model_from_authored_system(
                 let dependency_name = dependency_display_name(&dependency_slug);
 
                 match dependency_kind {
-                    PackageJsonDependencyKind::ExternalSystem => {
+                    DependencyTargetKind::ExternalSystem => {
                         let external_system_slug = resolve_generated_system_slug(
                             &dependency_slug,
                             &reserved_slugs,
@@ -182,7 +182,7 @@ pub fn build_minimal_generated_model_from_authored_system(
                             generated: true,
                         });
                     }
-                    PackageJsonDependencyKind::StoreContainer => {
+                    DependencyTargetKind::StoreContainer => {
                         let store_container_slug = resolve_generated_store_container_slug(
                             &dependency_slug,
                             &system_slug,
@@ -732,7 +732,7 @@ fn authored_store_container_exists(
 
 fn package_json_dependency_targets_from_manifest(
     manifest: &serde_json::Value,
-) -> BTreeMap<String, PackageJsonDependencyKind> {
+) -> BTreeMap<String, DependencyTargetKind> {
     let mut dependencies = BTreeMap::new();
     for section_name in ["dependencies"] {
         let Some(dependency_section) = manifest
@@ -743,13 +743,12 @@ fn package_json_dependency_targets_from_manifest(
         };
 
         for dependency_name in dependency_section.keys() {
-            if let Some((dependency_slug, dependency_kind)) =
-                normalize_package_json_dependency_name(dependency_name)
-            {
-                dependencies
-                    .entry(dependency_slug)
-                    .or_insert(dependency_kind);
-            }
+            collect_dependency_target(
+                dependency_name,
+                PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS,
+                PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS,
+                &mut dependencies,
+            );
         }
     }
 
@@ -757,93 +756,342 @@ fn package_json_dependency_targets_from_manifest(
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PackageJsonDependencyKind {
+enum DependencyTargetKind {
     ExternalSystem,
     StoreContainer,
 }
 
-const PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, PackageJsonDependencyKind)] = &[
-    ("aws-sdk", "aws", PackageJsonDependencyKind::ExternalSystem),
-    ("pg", "postgres", PackageJsonDependencyKind::StoreContainer),
-    (
-        "postgres",
-        "postgres",
-        PackageJsonDependencyKind::StoreContainer,
-    ),
+const PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    ("aws-sdk", "aws", DependencyTargetKind::ExternalSystem),
+    ("pg", "postgres", DependencyTargetKind::StoreContainer),
+    ("postgres", "postgres", DependencyTargetKind::StoreContainer),
     (
         "postgresql",
         "postgres",
-        PackageJsonDependencyKind::StoreContainer,
+        DependencyTargetKind::StoreContainer,
     ),
-    ("mysql", "mysql", PackageJsonDependencyKind::StoreContainer),
-    ("mysql2", "mysql", PackageJsonDependencyKind::StoreContainer),
-    ("redis", "redis", PackageJsonDependencyKind::StoreContainer),
+    ("mysql", "mysql", DependencyTargetKind::StoreContainer),
+    ("mysql2", "mysql", DependencyTargetKind::StoreContainer),
+    ("redis", "redis", DependencyTargetKind::StoreContainer),
+    ("mongodb", "mongodb", DependencyTargetKind::StoreContainer),
+    ("mongo", "mongodb", DependencyTargetKind::StoreContainer),
+    ("sqlite", "sqlite", DependencyTargetKind::StoreContainer),
+    ("rusqlite", "sqlite", DependencyTargetKind::StoreContainer),
+    ("stripe", "stripe", DependencyTargetKind::ExternalSystem),
+    ("sendgrid", "sendgrid", DependencyTargetKind::ExternalSystem),
+    ("twilio", "twilio", DependencyTargetKind::ExternalSystem),
+    ("sentry", "sentry", DependencyTargetKind::ExternalSystem),
+];
+
+const PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] =
+    &[("@aws-sdk/", "aws", DependencyTargetKind::ExternalSystem)];
+
+const GEMFILE_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    ("pg", "postgres", DependencyTargetKind::StoreContainer),
+    ("mysql2", "mysql", DependencyTargetKind::StoreContainer),
+    ("redis", "redis", DependencyTargetKind::StoreContainer),
+    ("mongo", "mongodb", DependencyTargetKind::StoreContainer),
+    ("mongoid", "mongodb", DependencyTargetKind::StoreContainer),
+    ("sqlite3", "sqlite", DependencyTargetKind::StoreContainer),
+    ("stripe", "stripe", DependencyTargetKind::ExternalSystem),
     (
-        "mongodb",
-        "mongodb",
-        PackageJsonDependencyKind::StoreContainer,
-    ),
-    (
-        "mongo",
-        "mongodb",
-        PackageJsonDependencyKind::StoreContainer,
-    ),
-    (
-        "sqlite",
-        "sqlite",
-        PackageJsonDependencyKind::StoreContainer,
-    ),
-    (
-        "rusqlite",
-        "sqlite",
-        PackageJsonDependencyKind::StoreContainer,
-    ),
-    (
-        "stripe",
-        "stripe",
-        PackageJsonDependencyKind::ExternalSystem,
-    ),
-    (
+        "sendgrid-ruby",
         "sendgrid",
-        "sendgrid",
-        PackageJsonDependencyKind::ExternalSystem,
+        DependencyTargetKind::ExternalSystem,
     ),
     (
+        "twilio-ruby",
         "twilio",
-        "twilio",
-        PackageJsonDependencyKind::ExternalSystem,
-    ),
-    (
-        "sentry",
-        "sentry",
-        PackageJsonDependencyKind::ExternalSystem,
+        DependencyTargetKind::ExternalSystem,
     ),
 ];
 
-const PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, PackageJsonDependencyKind)] = &[(
-    "@aws-sdk/",
-    "aws",
-    PackageJsonDependencyKind::ExternalSystem,
-)];
+const GEMFILE_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    ("aws-sdk", "aws", DependencyTargetKind::ExternalSystem),
+    ("sentry-", "sentry", DependencyTargetKind::ExternalSystem),
+];
 
-fn normalize_package_json_dependency_name(
+const CARGO_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    ("postgres", "postgres", DependencyTargetKind::StoreContainer),
+    (
+        "tokio-postgres",
+        "postgres",
+        DependencyTargetKind::StoreContainer,
+    ),
+    ("mysql", "mysql", DependencyTargetKind::StoreContainer),
+    ("mysql_async", "mysql", DependencyTargetKind::StoreContainer),
+    ("redis", "redis", DependencyTargetKind::StoreContainer),
+    ("mongodb", "mongodb", DependencyTargetKind::StoreContainer),
+    ("rusqlite", "sqlite", DependencyTargetKind::StoreContainer),
+    ("aws-config", "aws", DependencyTargetKind::ExternalSystem),
+    (
+        "async-stripe",
+        "stripe",
+        DependencyTargetKind::ExternalSystem,
+    ),
+    ("sentry", "sentry", DependencyTargetKind::ExternalSystem),
+];
+
+const CARGO_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] =
+    &[("aws-sdk-", "aws", DependencyTargetKind::ExternalSystem)];
+
+const GO_MOD_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    (
+        "github.com/lib/pq",
+        "postgres",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/go-sql-driver/mysql",
+        "mysql",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "go.mongodb.org/mongo-driver",
+        "mongodb",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/mattn/go-sqlite3",
+        "sqlite",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/getsentry/sentry-go",
+        "sentry",
+        DependencyTargetKind::ExternalSystem,
+    ),
+];
+
+const GO_MOD_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    (
+        "github.com/jackc/pgx",
+        "postgres",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/redis/go-redis",
+        "redis",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/go-redis/redis",
+        "redis",
+        DependencyTargetKind::StoreContainer,
+    ),
+    (
+        "github.com/aws/aws-sdk-go",
+        "aws",
+        DependencyTargetKind::ExternalSystem,
+    ),
+    (
+        "github.com/stripe/stripe-go",
+        "stripe",
+        DependencyTargetKind::ExternalSystem,
+    ),
+    (
+        "github.com/twilio/twilio-go",
+        "twilio",
+        DependencyTargetKind::ExternalSystem,
+    ),
+    (
+        "github.com/sendgrid/sendgrid-go",
+        "sendgrid",
+        DependencyTargetKind::ExternalSystem,
+    ),
+];
+
+const PYTHON_EXACT_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[
+    ("psycopg", "postgres", DependencyTargetKind::StoreContainer),
+    ("psycopg2", "postgres", DependencyTargetKind::StoreContainer),
+    (
+        "psycopg2-binary",
+        "postgres",
+        DependencyTargetKind::StoreContainer,
+    ),
+    ("asyncpg", "postgres", DependencyTargetKind::StoreContainer),
+    ("mysqlclient", "mysql", DependencyTargetKind::StoreContainer),
+    ("pymysql", "mysql", DependencyTargetKind::StoreContainer),
+    ("redis", "redis", DependencyTargetKind::StoreContainer),
+    ("pymongo", "mongodb", DependencyTargetKind::StoreContainer),
+    ("boto3", "aws", DependencyTargetKind::ExternalSystem),
+    ("botocore", "aws", DependencyTargetKind::ExternalSystem),
+    ("stripe", "stripe", DependencyTargetKind::ExternalSystem),
+    ("twilio", "twilio", DependencyTargetKind::ExternalSystem),
+    ("sendgrid", "sendgrid", DependencyTargetKind::ExternalSystem),
+    ("sentry-sdk", "sentry", DependencyTargetKind::ExternalSystem),
+];
+
+const PYTHON_PREFIX_DEPENDENCY_TARGETS: &[(&str, &str, DependencyTargetKind)] = &[];
+
+fn collect_dependency_target(
     dependency_name: &str,
-) -> Option<(String, PackageJsonDependencyKind)> {
+    exact_targets: &[(&str, &str, DependencyTargetKind)],
+    prefix_targets: &[(&str, &str, DependencyTargetKind)],
+    dependencies: &mut BTreeMap<String, DependencyTargetKind>,
+) {
     let normalized = dependency_name.to_ascii_lowercase();
 
-    for (prefix, slug, kind) in PACKAGE_JSON_PREFIX_DEPENDENCY_TARGETS {
+    for (prefix, slug, kind) in prefix_targets {
         if normalized.starts_with(prefix) {
-            return Some(((*slug).to_string(), *kind));
+            dependencies.entry((*slug).to_string()).or_insert(*kind);
+            return;
         }
     }
 
-    for (name, slug, kind) in PACKAGE_JSON_EXACT_DEPENDENCY_TARGETS {
+    for (name, slug, kind) in exact_targets {
         if normalized == *name {
-            return Some(((*slug).to_string(), *kind));
+            dependencies.entry((*slug).to_string()).or_insert(*kind);
+            return;
+        }
+    }
+}
+
+fn gemfile_dependency_targets(manifest_text: &str) -> BTreeMap<String, DependencyTargetKind> {
+    let mut dependencies = BTreeMap::new();
+    for gem_name in gemfile_declared_gem_names(manifest_text) {
+        collect_dependency_target(
+            gem_name,
+            GEMFILE_EXACT_DEPENDENCY_TARGETS,
+            GEMFILE_PREFIX_DEPENDENCY_TARGETS,
+            &mut dependencies,
+        );
+    }
+    dependencies
+}
+
+fn cargo_dependency_targets(manifest_text: &str) -> BTreeMap<String, DependencyTargetKind> {
+    let mut dependencies = BTreeMap::new();
+    let Ok(manifest) = toml::from_str::<toml::Value>(manifest_text) else {
+        return dependencies;
+    };
+    let Some(dependency_section) = manifest.get("dependencies").and_then(toml::Value::as_table)
+    else {
+        return dependencies;
+    };
+
+    for dependency_name in dependency_section.keys() {
+        collect_dependency_target(
+            dependency_name,
+            CARGO_EXACT_DEPENDENCY_TARGETS,
+            CARGO_PREFIX_DEPENDENCY_TARGETS,
+            &mut dependencies,
+        );
+    }
+
+    dependencies
+}
+
+fn go_mod_dependency_targets(manifest_text: &str) -> BTreeMap<String, DependencyTargetKind> {
+    let mut dependencies = BTreeMap::new();
+    let mut in_require_block = false;
+
+    for line in manifest_text.lines() {
+        let is_indirect = line.contains("// indirect");
+        let line = line.split("//").next().unwrap_or("").trim();
+        if is_indirect || line.is_empty() {
+            continue;
+        }
+
+        let module_path = if in_require_block {
+            if line == ")" {
+                in_require_block = false;
+                continue;
+            }
+            line.split_whitespace().next()
+        } else if let Some(remainder) = line.strip_prefix("require") {
+            let remainder = remainder.trim();
+            if remainder == "(" {
+                in_require_block = true;
+                continue;
+            }
+            remainder.split_whitespace().next()
+        } else {
+            continue;
+        };
+
+        if let Some(module_path) = module_path {
+            collect_dependency_target(
+                module_path,
+                GO_MOD_EXACT_DEPENDENCY_TARGETS,
+                GO_MOD_PREFIX_DEPENDENCY_TARGETS,
+                &mut dependencies,
+            );
         }
     }
 
-    None
+    dependencies
+}
+
+fn pyproject_dependency_targets(manifest_text: &str) -> BTreeMap<String, DependencyTargetKind> {
+    let mut dependencies = BTreeMap::new();
+    let Ok(manifest) = toml::from_str::<toml::Value>(manifest_text) else {
+        return dependencies;
+    };
+    let Some(requirement_specs) = manifest
+        .get("project")
+        .and_then(|project| project.get("dependencies"))
+        .and_then(toml::Value::as_array)
+    else {
+        return dependencies;
+    };
+
+    for requirement in requirement_specs.iter().filter_map(toml::Value::as_str) {
+        if let Some(distribution_name) = python_requirement_distribution_name(requirement) {
+            collect_dependency_target(
+                &distribution_name,
+                PYTHON_EXACT_DEPENDENCY_TARGETS,
+                PYTHON_PREFIX_DEPENDENCY_TARGETS,
+                &mut dependencies,
+            );
+        }
+    }
+
+    dependencies
+}
+
+fn requirements_txt_dependency_targets(
+    manifest_text: &str,
+) -> BTreeMap<String, DependencyTargetKind> {
+    let mut dependencies = BTreeMap::new();
+    for line in manifest_text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('-') {
+            continue;
+        }
+
+        if let Some(distribution_name) = python_requirement_distribution_name(line) {
+            collect_dependency_target(
+                &distribution_name,
+                PYTHON_EXACT_DEPENDENCY_TARGETS,
+                PYTHON_PREFIX_DEPENDENCY_TARGETS,
+                &mut dependencies,
+            );
+        }
+    }
+
+    dependencies
+}
+
+fn python_requirement_distribution_name(requirement: &str) -> Option<String> {
+    let name: String = requirement
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .map(|c| {
+            if c == '_' || c == '.' {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 fn resolve_generated_system_slug(
@@ -919,7 +1167,7 @@ fn detect_root_cargo_manifest(repo_root: &Path, repo_name: &str) -> Option<Gener
         name: titleize(&name),
         code,
         tech: Some("Rust".to_string()),
-        dependency_targets: BTreeMap::new(),
+        dependency_targets: cargo_dependency_targets(&manifest_text),
     })
 }
 
@@ -992,7 +1240,7 @@ fn detect_root_go_mod_manifest(repo_root: &Path, repo_name: &str) -> Option<Gene
         name: titleize(&module_name),
         code,
         tech: Some("Go".to_string()),
-        dependency_targets: BTreeMap::new(),
+        dependency_targets: go_mod_dependency_targets(&manifest_text),
     })
 }
 
@@ -1020,7 +1268,7 @@ fn detect_root_pyproject_toml_manifest(
         name: titleize(&name),
         code,
         tech: Some("Python".to_string()),
-        dependency_targets: BTreeMap::new(),
+        dependency_targets: pyproject_dependency_targets(&manifest_text),
     })
 }
 
@@ -1028,7 +1276,8 @@ fn detect_root_requirements_txt_manifest(
     repo_root: &Path,
     has_pyproject: bool,
 ) -> Option<GeneratedContainer> {
-    if has_pyproject || !repo_root.join("requirements.txt").is_file() {
+    let manifest_path = repo_root.join("requirements.txt");
+    if has_pyproject || !manifest_path.is_file() {
         return None;
     }
 
@@ -1038,12 +1287,16 @@ fn detect_root_requirements_txt_manifest(
         ".".to_string()
     };
 
+    let dependency_targets = fs::read_to_string(&manifest_path)
+        .map(|text| requirements_txt_dependency_targets(&text))
+        .unwrap_or_default();
+
     Some(GeneratedContainer {
         slug: "python".to_string(),
         name: "Python".to_string(),
         code,
         tech: Some("Python".to_string()),
-        dependency_targets: BTreeMap::new(),
+        dependency_targets,
     })
 }
 
@@ -1073,7 +1326,7 @@ fn detect_root_gemfile_manifest(repo_root: &Path) -> Option<GeneratedContainer> 
         } else {
             "Ruby".to_string()
         }),
-        dependency_targets: BTreeMap::new(),
+        dependency_targets: gemfile_dependency_targets(&manifest_text),
     })
 }
 
@@ -1092,11 +1345,21 @@ fn detect_root_dockerfile_manifest(repo_root: &Path) -> Option<GeneratedContaine
     })
 }
 
+const ROOT_DOCKER_COMPOSE_MANIFEST_NAMES: &[&str] = &[
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+];
+
 fn detect_root_docker_compose_services_manifest(repo_root: &Path) -> Vec<GeneratedContainer> {
-    let manifest_path = repo_root.join("docker-compose.yml");
-    if !manifest_path.is_file() {
+    let Some(manifest_path) = ROOT_DOCKER_COMPOSE_MANIFEST_NAMES
+        .iter()
+        .map(|name| repo_root.join(name))
+        .find(|path| path.is_file())
+    else {
         return Vec::new();
-    }
+    };
 
     let manifest_text = match fs::read_to_string(&manifest_path) {
         Ok(text) => text,
@@ -1199,34 +1462,28 @@ fn resolve_root_docker_compose_service_code(repo_root: &Path, build_context: &st
 }
 
 fn gemfile_declares_gem(text: &str, gem_name: &str) -> bool {
-    for line in text.lines() {
+    gemfile_declared_gem_names(text).any(|declared| declared == gem_name)
+}
+
+fn gemfile_declared_gem_names(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter_map(|line| {
         let line = line.split('#').next().unwrap_or("").trim_start();
-        let Some(remainder) = line.strip_prefix("gem") else {
-            continue;
-        };
-        let Some(first_character) = remainder.chars().next() else {
-            continue;
-        };
+        let remainder = line.strip_prefix("gem")?;
+        let first_character = remainder.chars().next()?;
         if !first_character.is_ascii_whitespace() && first_character != '(' {
-            continue;
+            return None;
         }
 
         let remainder = remainder.trim_start().trim_start_matches('(').trim_start();
-        let declared = remainder
+        remainder
             .strip_prefix('"')
             .and_then(|rest| rest.split('"').next())
             .or_else(|| {
                 remainder
                     .strip_prefix('\'')
                     .and_then(|rest| rest.split('\'').next())
-            });
-
-        if declared == Some(gem_name) {
-            return true;
-        }
-    }
-
-    false
+            })
+    })
 }
 
 fn parse_toml_string_in_table(text: &str, table: &str, key: &str) -> Option<String> {
@@ -1292,7 +1549,7 @@ struct GeneratedContainer {
     name: String,
     code: String,
     tech: Option<String>,
-    dependency_targets: BTreeMap<String, PackageJsonDependencyKind>,
+    dependency_targets: BTreeMap<String, DependencyTargetKind>,
 }
 
 pub fn render_generated_model_yaml(model: &Model) -> Result<String, CommandError> {
@@ -1674,6 +1931,249 @@ gem("rails", "~> 7.1")
             .expect("generated ruby container");
 
         assert_eq!(container.base.tech.as_deref(), Some("Ruby on Rails"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_gemfile_dependency_targets() {
+        let root = fresh_test_dir("generated-gemfile-dependency-targets");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("app")).expect("create app");
+        fs::write(
+            repo_dir.join("Gemfile"),
+            r#"
+source "https://rubygems.org"
+gem "rails", "~> 7.1"
+gem "pg"
+gem "redis"
+gem "aws-sdk-s3"
+gem "sentry-rails"
+"#,
+        )
+        .expect("write gemfile");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        let postgres = generated_system
+            .containers
+            .get("postgres")
+            .expect("postgres store container");
+        assert_eq!(postgres.kind, crate::ContainerKind::Store);
+        let redis = generated_system
+            .containers
+            .get("redis")
+            .expect("redis store container");
+        assert_eq!(redis.kind, crate::ContainerKind::Store);
+
+        let aws = model.systems.get("aws").expect("aws external system");
+        assert!(aws.external);
+        assert!(model.systems.contains_key("sentry"));
+
+        assert!(model
+            .relationships
+            .iter()
+            .any(|r| r.from == "ruby" && r.to == "postgres" && r.description == "Uses postgres"));
+        assert!(model
+            .relationships
+            .iter()
+            .any(|r| r.from == "ruby" && r.to == "redis"));
+        assert!(model
+            .relationships
+            .iter()
+            .any(|r| r.from == "ruby" && r.to == "aws"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_cargo_dependency_targets() {
+        let root = fresh_test_dir("generated-cargo-dependency-targets");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("Cargo.toml"),
+            r#"[package]
+name = "cool-service"
+version = "0.1.0"
+
+[dependencies]
+tokio-postgres = "0.7"
+redis = { version = "0.25" }
+aws-sdk-s3 = "1"
+serde = "1"
+"#,
+        )
+        .expect("write cargo manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        assert_eq!(
+            generated_system.containers["postgres"].kind,
+            crate::ContainerKind::Store
+        );
+        assert_eq!(
+            generated_system.containers["redis"].kind,
+            crate::ContainerKind::Store
+        );
+        assert!(model.systems["aws"].external);
+        assert!(!model.systems.contains_key("serde"));
+        assert!(model
+            .relationships
+            .iter()
+            .any(|r| r.from == "cool_service" && r.to == "postgres"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_go_mod_dependency_targets() {
+        let root = fresh_test_dir("generated-go-mod-dependency-targets");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::write(
+            repo_dir.join("go.mod"),
+            r#"module github.com/acme/api-service
+
+go 1.22
+
+require (
+	github.com/lib/pq v1.10.9
+	github.com/redis/go-redis/v9 v9.5.1
+	github.com/aws/aws-sdk-go-v2 v1.26.0
+	golang.org/x/text v0.14.0 // indirect
+)
+
+require github.com/getsentry/sentry-go v0.27.0
+"#,
+        )
+        .expect("write go manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        assert_eq!(
+            generated_system.containers["postgres"].kind,
+            crate::ContainerKind::Store
+        );
+        assert_eq!(
+            generated_system.containers["redis"].kind,
+            crate::ContainerKind::Store
+        );
+        assert!(model.systems["aws"].external);
+        assert!(model.systems["sentry"].external);
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_python_dependency_targets() {
+        let root = fresh_test_dir("generated-python-dependency-targets");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::create_dir(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("pyproject.toml"),
+            r#"[project]
+name = "cool-package"
+version = "0.1.0"
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "redis",
+    "boto3~=1.34",
+    "requests",
+]
+"#,
+        )
+        .expect("write pyproject manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        assert_eq!(
+            generated_system.containers["postgres"].kind,
+            crate::ContainerKind::Store
+        );
+        assert_eq!(
+            generated_system.containers["redis"].kind,
+            crate::ContainerKind::Store
+        );
+        assert!(model.systems["aws"].external);
+        assert!(!model.systems.contains_key("requests"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_requirements_txt_dependency_targets() {
+        let root = fresh_test_dir("generated-requirements-dependency-targets");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::write(
+            repo_dir.join("requirements.txt"),
+            "psycopg2==2.9.9  # database\nredis>=5\n-r extras.txt\nflask==3.0\n",
+        )
+        .expect("write requirements");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        assert_eq!(
+            generated_system.containers["postgres"].kind,
+            crate::ContainerKind::Store
+        );
+        assert_eq!(
+            generated_system.containers["redis"].kind,
+            crate::ContainerKind::Store
+        );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn build_generated_model_detects_docker_compose_yaml_extension() {
+        let root = fresh_test_dir("generated-compose-yaml-extension");
+        let repo_dir = root.join("repo");
+        fs::create_dir(&repo_dir).expect("create repo");
+        fs::write(
+            repo_dir.join("docker-compose.yaml"),
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+        )
+        .expect("write compose manifest");
+
+        let repo = repo_handle_from_path(&repo_dir).expect("repo handle");
+        let model = build_minimal_generated_model(&repo);
+        let generated_system = model
+            .systems
+            .get(&slugify(&repo.name))
+            .expect("internal system");
+
+        assert!(generated_system.containers.contains_key("web"));
+        assert!(generated_system.containers.contains_key("db"));
 
         cleanup(root);
     }

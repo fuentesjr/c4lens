@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://c4lens.local/schema.json",
+  "title": "c4lens model",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "generated": { "type": "boolean", "default": false },
+    "actors": {
+      "type": "object",
+      "default": {},
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/actor" }
+    },
+    "systems": {
+      "type": "object",
+      "default": {},
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/system" }
+    },
+    "relationships": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/relationshipShorthandString" },
+          { "$ref": "#/$defs/relationshipShorthandMapping" },
+          { "$ref": "#/$defs/relationship" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["live", "planned", "deprecated"],
+      "default": "live"
+    },
+    "containerKind": {
+      "type": "string",
+      "enum": ["service", "app", "store", "queue", "worker", "job"],
+      "default": "service"
+    },
+    "codePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "tech": { "type": "string" },
+        "technology": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "code": { "$ref": "#/$defs/codePath" },
+        "generated": { "type": "boolean", "default": false }
+      }
+    },
+    "actor": {
+      "allOf": [
+        { "$ref": "#/$defs/baseElement" }
+      ]
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "tech": { "type": "string" },
+        "technology": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "code": { "$ref": "#/$defs/codePath" },
+        "external": { "type": "boolean", "default": false },
+        "generated": { "type": "boolean", "default": false },
+        "containers": {
+          "type": "object",
+          "default": {},
+          "propertyNames": { "$ref": "#/$defs/slug" },
+          "additionalProperties": { "$ref": "#/$defs/container" }
+        }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "tech": { "type": "string" },
+        "technology": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "code": { "$ref": "#/$defs/codePath" },
+        "kind": { "$ref": "#/$defs/containerKind" },
+        "generated": { "type": "boolean", "default": false },
+        "components": {
+          "type": "object",
+          "default": {},
+          "propertyNames": { "$ref": "#/$defs/slug" },
+          "additionalProperties": { "$ref": "#/$defs/component" }
+        }
+      }
+    },
+    "component": {
+      "allOf": [
+        { "$ref": "#/$defs/baseElement" }
+      ]
+    },
+    "relationshipShorthandString": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\s*->\\s*[a-z][a-z0-9_]*\\s*:.+$"
+    },
+    "relationshipShorthandMapping": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*\\s*->\\s*[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "description"],
+      "properties": {
+        "from": { "$ref": "#/$defs/slug" },
+        "to": { "$ref": "#/$defs/slug" },
+        "description": { "type": "string", "minLength": 1 },
+        "tech": { "type": "string" },
+        "technology": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "generated": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

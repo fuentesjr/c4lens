@@ -23,6 +23,7 @@ The project is intentionally local-first:
 - `crates/c4lens-tauri`: Tauri command/event layer and desktop shell.
 - `app`: React/Vite renderer.
 - `docs`: design and implementation spec.
+- `c4`: c4lens's own authored C4 model and generated overlay (dogfood).
 
 ## Local Development
 

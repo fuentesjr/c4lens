@@ -87,6 +87,22 @@ listed here are planned or deferred capabilities, not regressions.
 | Internal MVP release notes | Implemented | `docs/mvp-release-notes.md` summarizes shipped scope, verification, artifact names, known limits, and upgrade notes for the internal candidate. |
 | Internal MVP release checklist | Implemented | `docs/mvp-release-checklist.md` captures the automated gate, artifact paths, manual smoke, and known non-blocking MVP limits. |
 
+## Generation Quality
+
+Course correction (2026-07-05): release-process automation is frozen; the
+active product workstream is the quality of code→model generation, validated
+against real-shaped repositories and this repository itself (`c4/model.yml`).
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Manifest datastore and external-system detection | Implemented | Gemfile, Cargo.toml, go.mod, pyproject.toml, and requirements.txt dependencies now generate store containers and external systems, matching the existing package.json coverage. |
+| Compose filename coverage | Implemented | Compose services are detected from docker-compose.yml, docker-compose.yaml, compose.yml, and compose.yaml. |
+| Autoloaded Rails-shaped regression gate | Implemented | CLI coverage asserts a require-free Rails-shaped repo still generates stores, compose services, and dependency relationships instead of an edgeless model. |
+| Self-model dogfood | Implemented | The repository carries its own authored `c4/model.yml` and generated overlay. |
+| Rails constant-reference relationship inference | Planned | Port the `tmp/generation-spike` heuristics (association and constant references) into `c4lens-core` so autoloaded Ruby repos get real component edges, not just manifest-derived ones. |
+| Workspace member containers | Planned | Detect Cargo workspace members and package.json workspaces as containers; the root-only manifest scan currently produces a single component-less container on c4lens itself. |
+| Generated container naming on collisions | Planned | Same-named containers currently get numeric slugs (`c4lens_2`, `c4lens_3`); qualify by tech or manifest path instead. |
+
 ## Later Backlog
 
 | Item | Status | Notes |
